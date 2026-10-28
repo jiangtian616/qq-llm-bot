@@ -1,0 +1,43 @@
+[project]
+name = "qq-llm-bot-agent-core"
+version = "0.1.0"
+description = "qq-llm-bot 核心服务：QQ 官方机器人接入、对话 Agent、本机控制接口"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "aiohttp>=3.10",
+    "aiosqlite>=0.20",
+    "alembic>=1.13",
+    "anthropic>=1.0",
+    "fastapi>=0.115",
+    "filelock>=3.15",
+    "keyring>=25",
+    "platformdirs>=4.2",
+    "pydantic>=2.8",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "uvicorn>=0.30",
+    "websockets>=13",
+]
+
+[project.scripts]
+agent-core = "agent_core.app.main:main"
+
+# 插件通过 entry points 登记；插件注册表按配置里的名字装配实现。
+# transports 的名字是「渠道.接入方式」，不同渠道可以各有自己的 websocket 实现。
+[project.entry-points."qq_llm_bot.channels"]
+qq = "agent_core.plugins.channel_qq.adapter:QQAdapter"
+
+[project.entry-points."qq_llm_bot.transports"]
+"qq.websocket" = "agent_core.plugins.channel_qq.transport_ws:WebSocketTransport"
+"qq.webhook" = "agent_core.plugins.channel_qq.transport_webhook:WebhookTransport"
+
+[project.entry-points."qq_llm_bot.providers"]
+claude = "agent_core.plugins.provider_claude.provider:ClaudeProvider"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_core"]
