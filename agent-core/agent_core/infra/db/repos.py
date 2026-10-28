@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, delete, exists, func, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -221,9 +221,12 @@ class EventRepo(_Repo):
                 )
             )
 
-    async def list(self, limit: int = 100) -> list[SystemEvent]:
+    async def list(self, limit: int = 100, *, level: str | None = None) -> list[SystemEvent]:
+        stmt = select(SystemEvent).order_by(SystemEvent.id.desc()).limit(limit)
+        if level:
+            stmt = stmt.where(SystemEvent.level == level)
         async with self._sessions() as s:
-            return list((await s.scalars(select(SystemEvent).order_by(SystemEvent.id.desc()).limit(limit))).all())
+            return list((await s.scalars(stmt)).all())
 
 
 # ---------- 收件箱 ----------
@@ -290,6 +293,28 @@ class InboxRepo(_Repo):
             values["conversation_id"] = conversation_id
         async with self._sessions.begin() as s:
             await s.execute(update(InboxEvent).where(InboxEvent.id == inbox_id).values(**values))
+
+    async def list(self, *, status: str | None, limit: int) -> list[InboxEvent]:
+        stmt = select(InboxEvent).order_by(InboxEvent.id.desc()).limit(limit)
+        if status:
+            stmt = stmt.where(InboxEvent.status == status)
+        async with self._sessions() as s:
+            return list((await s.scalars(stmt)).all())
+
+    async def retry(self, inbox_id: int) -> str | None:
+        """失败的事件在回复窗口内可以重试；返回不能重试的原因，能重试返回 None。"""
+        async with self._sessions.begin() as s:
+            row = await s.get(InboxEvent, inbox_id)
+            if row is None:
+                return "事件不存在"
+            if row.status != "failed":
+                return "只有失败的事件可以重试"
+            if row.reply_deadline and now_ms() > row.reply_deadline:
+                return "已经超过被动回复时间，平台不再接受回复"
+            row.status = "pending"
+            row.locked_until = None
+            row.last_error = None
+        return None
 
     async def release_leases(self) -> int:
         """启动时调用：只有一个实例在运行，上次留下的租约都是崩溃遗留的，立刻放开。"""
@@ -470,6 +495,85 @@ class ConversationRepo(_Repo):
                 turn_status=turn.status if turn else None,
                 duplicate=duplicate,
             )
+
+    async def get(self, conversation_id: int) -> Conversation | None:
+        async with self._sessions() as s:
+            return await s.get(Conversation, conversation_id)
+
+    async def update(self, conversation_id: int, **fields: Any) -> Conversation | None:
+        async with self._sessions.begin() as s:
+            conv = await s.get(Conversation, conversation_id)
+            if conv is None:
+                return None
+            for k, v in fields.items():
+                setattr(conv, k, v)
+        return conv
+
+    async def summaries(self, *, account_id: int | None, limit: int) -> list[tuple[Conversation, int, int]]:
+        """会话列表：会话、消息数、未 @ 的群消息数（收到过就说明群里开了接收全部消息）。"""
+        unmentioned = func.sum(case((and_(Message.direction == "in", Message.is_mention == 0), 1), else_=0))
+        stmt = (
+            select(Conversation, func.count(Message.id), func.coalesce(unmentioned, 0))
+            .outerjoin(Message, Message.conversation_id == Conversation.id)
+            .group_by(Conversation.id)
+            .order_by(Conversation.last_message_at.desc().nulls_last(), Conversation.id.desc())
+            .limit(limit)
+        )
+        if account_id is not None:
+            stmt = stmt.where(Conversation.account_id == account_id)
+        async with self._sessions() as s:
+            return [(c, n, u) for c, n, u in (await s.execute(stmt)).all()]
+
+    async def messages(self, conversation_id: int, *, limit: int, before_id: int | None = None) -> list[dict[str, Any]]:
+        """会话历史，按时间正序；带发言人和问答信息。"""
+        stmt = (
+            select(Message, Contact, Turn)
+            .outerjoin(Contact, Message.sender_contact_id == Contact.id)
+            .outerjoin(Turn, Message.turn_id == Turn.id)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.id.desc())
+            .limit(limit)
+        )
+        if before_id is not None:
+            stmt = stmt.where(Message.id < before_id)
+        async with self._sessions() as s:
+            conv = await s.get(Conversation, conversation_id)
+            rows = (await s.execute(stmt)).all()
+        scene = conv.scene if conv else ""
+        return [
+            {
+                "id": m.id,
+                "direction": m.direction,
+                "history_epoch": m.history_epoch,
+                "content": m.content,
+                "attachments": json.loads(m.attachments_json or "[]"),
+                "is_mention": bool(m.is_mention),
+                "triggered": bool(m.triggered),
+                "created_at": m.created_at,
+                "sender": None
+                if contact is None
+                else {
+                    "contact_id": contact.id,
+                    "openid": contact.openid,
+                    "label": speaker_label(scene, contact.openid, contact.display_name) or contact.openid,
+                    "display_name": contact.display_name,
+                },
+                "turn": None
+                if turn is None
+                else {
+                    "id": turn.id,
+                    "status": turn.status,
+                    "model": turn.model,
+                    "input_tokens": turn.input_tokens,
+                    "output_tokens": turn.output_tokens,
+                    "cache_read_tokens": turn.cache_read_tokens,
+                    "cost_usd": turn.cost_usd,
+                    "latency_ms": turn.latency_ms,
+                    "stop_reason": turn.stop_reason,
+                },
+            }
+            for m, contact, turn in reversed(rows)
+        ]
 
     async def clear_history(self, conversation_id: int) -> int:
         """清空会话：epoch 加 1，旧历史保留但不再带入上下文。返回新的 epoch。"""
@@ -652,6 +756,44 @@ class OutboxRepo(_Repo):
                 row.locked_until = now + lease_ms
                 row.attempts += 1
         return [(o, c) for o, c in rows]
+
+    async def list(self, *, status: str | None, limit: int) -> list[tuple[Outbox, Conversation]]:
+        stmt = (
+            select(Outbox, Conversation)
+            .join(Conversation, Outbox.conversation_id == Conversation.id)
+            .order_by(Outbox.id.desc())
+            .limit(limit)
+        )
+        if status:
+            stmt = stmt.where(Outbox.status == status)
+        async with self._sessions() as s:
+            return [(o, c) for o, c in (await s.execute(stmt)).all()]
+
+    async def retry(self, outbox_id: int) -> str | None:
+        """失败的分段在截止时间前可以重发；沿用同一个 msg_seq，平台会去重，不会发两次。"""
+        async with self._sessions.begin() as s:
+            row = await s.get(Outbox, outbox_id)
+            if row is None:
+                return "这条回复不存在"
+            if row.status != "failed":
+                return "只有发送失败的回复可以重试"
+            if row.deadline and now_ms() > row.deadline:
+                return "已经超过被动回复时间，平台不再接受回复"
+            row.status = "pending"
+            row.next_attempt_at = now_ms()
+            row.locked_until = None
+        return None
+
+    async def cancel(self, outbox_id: int) -> str | None:
+        async with self._sessions.begin() as s:
+            row = await s.get(Outbox, outbox_id)
+            if row is None:
+                return "这条回复不存在"
+            if row.status != "pending":
+                return "只有待发送的回复可以取消"
+            row.status = "cancelled"
+            row.locked_until = None
+        return None
 
     async def release_leases(self) -> int:
         async with self._sessions.begin() as s:

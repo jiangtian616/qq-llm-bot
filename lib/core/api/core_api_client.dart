@@ -84,6 +84,66 @@ class CoreApiClient {
   Future<void> putSetting(String key, Object? value, {String scope = 'global', int scopeId = 0}) =>
       _send('PUT', '/settings', {'scope': scope, 'scope_id': scopeId, 'key': key, 'value': value});
 
+  // ---- 会话 ----
+
+  Future<List<ConversationInfo>> listConversations({int? accountId}) async => [
+        for (final c in await _get('/conversations', {'account_id': ?accountId}) as List<dynamic>)
+          ConversationInfo.fromJson(c as Map<String, dynamic>),
+      ];
+
+  Future<List<ChatMessage>> conversationMessages(int id, {int limit = 100, int? beforeId}) async => [
+        for (final m in await _get('/conversations/$id/messages', {'limit': limit, 'before_id': ?beforeId})
+            as List<dynamic>)
+          ChatMessage.fromJson(m as Map<String, dynamic>),
+      ];
+
+  Future<ConversationInfo> renameConversation(int id, String displayName) async => ConversationInfo.fromJson(
+      await _send('PATCH', '/conversations/$id', {'display_name': displayName}) as Map<String, dynamic>);
+
+  Future<ConversationInfo> clearConversation(int id) async =>
+      ConversationInfo.fromJson(await _send('POST', '/conversations/$id/clear') as Map<String, dynamic>);
+
+  /// 查询群里的消息接收设置；force 为 false 时，10 分钟内查过就不再查。
+  Future<ConversationInfo> refreshBotState(int id, {bool force = true}) async => ConversationInfo.fromJson(
+      await _send('POST', '/conversations/$id/bot-state/refresh?force=$force') as Map<String, dynamic>);
+
+  // ---- 消息队列 ----
+
+  Future<List<InboxItem>> listInbox({String? status}) async => [
+        for (final e in await _get('/queue/inbox', {'status': ?status}) as List<dynamic>)
+          InboxItem.fromJson(e as Map<String, dynamic>),
+      ];
+
+  Future<List<OutboxItem>> listOutbox({String? status}) async => [
+        for (final o in await _get('/queue/outbox', {'status': ?status}) as List<dynamic>)
+          OutboxItem.fromJson(o as Map<String, dynamic>),
+      ];
+
+  Future<void> retryInbox(int id) => _send('POST', '/queue/inbox/$id/retry');
+
+  Future<void> retryOutbox(int id) => _send('POST', '/queue/outbox/$id/retry');
+
+  Future<void> cancelOutbox(int id) => _send('POST', '/queue/outbox/$id/cancel');
+
+  /// 收件箱、发件箱各状态的数量。
+  Future<({Map<String, int> inbox, Map<String, int> outbox})> stats() async {
+    final json = await _get('/stats') as Map<String, dynamic>;
+    Map<String, int> counts(Object? m) => (m as Map<String, dynamic>).map((k, v) => MapEntry(k, v as int));
+    return (inbox: counts(json['inbox']), outbox: counts(json['outbox']));
+  }
+
+  // ---- 日志 ----
+
+  Future<List<SystemEventItem>> systemEvents({int limit = 200, String? level}) async => [
+        for (final e in await _get('/system-events', {'limit': limit, 'level': ?level}) as List<dynamic>)
+          SystemEventItem.fromJson(e as Map<String, dynamic>),
+      ];
+
+  Future<({String file, List<String> lines})> logTail({int lines = 500}) async {
+    final json = await _get('/logs', {'lines': lines}) as Map<String, dynamic>;
+    return (file: json['file'] as String, lines: [for (final l in json['lines'] as List<dynamic>) l as String]);
+  }
+
   // ----
 
   Future<Object?> _get(String path, [Map<String, dynamic>? query]) async {

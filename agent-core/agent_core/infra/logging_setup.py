@@ -51,6 +51,8 @@ def setup_logging(logs_dir: Path, level: int = logging.INFO) -> None:
         handlers.append(logging.StreamHandler(sys.stderr))
     root = logging.getLogger()
     root.setLevel(level)
+    # Claude SDK 每个请求都打一行 INFO，太吵；出错时 SDK 和我们自己都会另外记录。
+    logging.getLogger("httpx2").setLevel(max(level, logging.WARNING))
     for h in handlers:
         h.setFormatter(fmt)
         h.addFilter(redactor)

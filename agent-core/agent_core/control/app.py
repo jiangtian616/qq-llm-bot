@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket, WebSocketDi
 
 from agent_core import API_VERSION, __version__
 from agent_core.control.api import build_router
+from agent_core.control.api_views import build_views_router
 from agent_core.control.auth import require_token, websocket_authorized
 from agent_core.control.state import ControlState
 
@@ -30,6 +31,7 @@ def create_app(state: ControlState, provider_names: list[str] | None = None) -> 
     app.state.provider_names = provider_names or []
     app.include_router(_router())
     app.include_router(build_router())
+    app.include_router(build_views_router())
     app.add_api_websocket_route("/events", _events)
     return app
 

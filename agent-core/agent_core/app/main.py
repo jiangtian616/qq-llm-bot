@@ -163,6 +163,8 @@ async def _serve(
         secrets=secrets,
         connections=connections,
         providers=providers,
+        wake_inbox=dispatcher.wake,
+        wake_outbox=outbox.wake,
         platform=config.plugins.channel,
         transport=config.plugins.transport,
     )

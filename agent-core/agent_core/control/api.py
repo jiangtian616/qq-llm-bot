@@ -304,7 +304,7 @@ def build_router() -> APIRouter:
     # ---- 运行事件和统计 ----
 
     @r.get("/system-events")
-    async def system_events(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+    async def system_events(request: Request, limit: int = 50, level: str | None = None) -> list[dict[str, Any]]:
         s = _ctl(request)
         return [
             {
@@ -316,7 +316,7 @@ def build_router() -> APIRouter:
                 "message": e.message,
                 "data": json.loads(e.data_json) if e.data_json else None,
             }
-            for e in await s.db.events.list(min(max(limit, 1), 500))
+            for e in await s.db.events.list(min(max(limit, 1), 500), level=level)
         ]
 
     @r.get("/stats")
