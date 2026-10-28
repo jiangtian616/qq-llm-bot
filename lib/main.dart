@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 
 import 'app/app.dart';
 import 'app/quit_flow.dart';
+import 'app/startup_error_app.dart';
 import 'core/connection/connection_store.dart';
 import 'platform/app_paths.dart';
 import 'platform/autostart_service.dart';
@@ -15,7 +16,13 @@ import 'platform/window_service.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-  final paths = AppPaths.resolve();
+  final AppPaths paths;
+  try {
+    paths = AppPaths.resolve();
+  } on DataDirException catch (e) {
+    runApp(StartupErrorApp(message: e.message));
+    return;
+  }
 
   WindowService? window;
   final instance = await SingleInstance.acquire(

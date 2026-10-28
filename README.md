@@ -99,7 +99,15 @@ macOS / Linux 把 `windows` 换成 `macos` / `linux`。开发模式下，桌面�
 | macOS | `~/Library/Application Support/qq-llm-bot` |
 | Linux | `~/.local/share/qq-llm-bot` |
 
-里面有数据库 `agent-core.db`、日志 `logs/`、迁移前的备份 `backups/`，以及核心服务运行时的 `control.json`（端口和随机令牌，macOS / Linux 上权限 0600）。设置环境变量 `QQ_LLM_BOT_DATA_DIR` 可以让桌面端改用别的目录。
+里面有数据库 `agent-core.db`、日志 `logs/`、迁移前的备份 `backups/`，以及核心服务运行时的 `control.json`（端口和随机令牌，macOS / Linux 上权限 0600）。
+
+数据目录按下面的顺序决定，用第一个命中的：
+
+1. 环境变量 `QQ_LLM_BOT_DATA_DIR`（核心服务还接受 `--data-dir` 参数）；
+2. **便携模式**：程序旁边有 `qq-llm-bot-data` 文件夹时，数据就放在里面。「程序旁边」在 Windows / Linux 免安装包里是可执行文件所在目录，在 macOS 上是 `.app` 所在目录，在 AppImage 里是 AppImage 文件所在目录。新建这个空文件夹就能切换到便携模式；
+3. 上表里的系统目录。
+
+以后还会在设置页支持自定义数据目录。密钥存在系统密钥库里，不在数据目录中，所以便携版拷到别的电脑后要重新填写 AppSecret 和 API Key。
 
 ### 本机控制接口
 

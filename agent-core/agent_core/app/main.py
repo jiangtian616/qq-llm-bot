@@ -27,7 +27,7 @@ from agent_core.core.lifecycle import ServiceLifecycle
 from agent_core.infra.db.migrate import prune_backups, upgrade_to_head
 from agent_core.infra.fileperm import write_private_file
 from agent_core.infra.logging_setup import setup_logging
-from agent_core.infra.paths import DataPaths
+from agent_core.infra.paths import DataDirError, DataPaths
 from agent_core.infra.secrets import SecretStore
 from agent_core.infra.single_instance import AlreadyRunningError, SingleInstanceLock
 
@@ -51,7 +51,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    paths = DataPaths.resolve(args.data_dir)
+    try:
+        paths = DataPaths.resolve(args.data_dir)
+    except DataDirError as e:
+        # 日志还没地方写，只能输出到控制台。
+        print(f"agent-core: {e}", file=sys.stderr)
+        return EXIT_CONFIG
     setup_logging(paths.logs_dir, getattr(logging, args.log_level))
 
     lock = SingleInstanceLock(paths.lock_file)
@@ -62,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ALREADY_RUNNING
 
     try:
-        log.info("agent-core %s 启动，数据目录：%s", __version__, paths.root)
+        log.info("agent-core %s 启动，数据目录：%s（%s）", __version__, paths.root, paths.source)
         try:
             config = load_config(paths.config_file)
             if args.port is not None:
