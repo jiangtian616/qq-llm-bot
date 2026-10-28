@@ -10,14 +10,21 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from agent_core.agent.prompt import HELP_TEXT, CLEARED_TEXT, EMPTY_REPLY_TEXT
+from agent_core.agent.prompt import (
+    BUDGET_EXCEEDED_TEXT,
+    CLEARED_TEXT,
+    EMPTY_REPLY_TEXT,
+    HELP_TEXT,
+    RATE_LIMITED_TEXT,
+)
 from agent_core.agent.providers import ProviderPool
 from agent_core.core.bus import BusEvent, EventBus
-from agent_core.core.clock import now_ms
+from agent_core.core.clock import now_ms, start_of_local_day_ms
 from agent_core.core.models import InboundMessage, NeutralMessage, Scene
 from agent_core.core.ports import ChannelAdapter
 from agent_core.infra.db.database import Database
 from agent_core.infra.db.repos import Ingested, OutboxChunk
+from agent_core.pipeline.middlewares.rate_limit import RateLimiter
 from agent_core.pipeline.outbox import split_reply
 
 log = logging.getLogger(__name__)
@@ -29,6 +36,8 @@ class AgentEngine:
         self._providers = providers
         self._bus = bus
         self._on_outbox = on_outbox
+        self._limiter = RateLimiter()
+        self._budget_warned: set[tuple[str, int]] = set()
 
     async def handle(self, inbox: Any, msg: InboundMessage, channel: ChannelAdapter) -> None:
         """处理收件箱里的一条消息。inbox 是 inbox_events 的一行（已加租约）。"""
@@ -55,6 +64,13 @@ class AgentEngine:
             name = msg.content[len(prefix) :].strip()
             if name in _COMMANDS:
                 command = name
+
+        # 预算用完或触发太频繁：这条消息只作为上下文保存，不调模型；回一句固定的提醒（限频每个窗口只提醒一次）。
+        blocked, notice = False, None
+        if triggered and command is None:
+            blocked, notice = await self._check_limits(msg, setting)
+            if blocked:
+                triggered = False
 
         profile = None
         if triggered and command is None:
@@ -84,6 +100,9 @@ class AgentEngine:
                     },
                 )
             )
+        if blocked and notice and not ingested.duplicate:
+            await self._system_reply(notice, inbox, msg, ingested)
+            return
         if not triggered:
             await db.inbox.finish(inbox.id, "done", conversation_id=ingested.conversation_id)
             return
@@ -105,12 +124,64 @@ class AgentEngine:
         profiles = await self._db.profiles.list()
         return profiles[0] if profiles else None
 
+    async def _check_limits(self, msg: InboundMessage, setting: Callable[[str], Any]) -> tuple[bool, str | None]:
+        """返回 (是否拦下, 给用户的提醒)。"""
+        exceeded = await self._budget_exceeded(msg.account_id)
+        if exceeded is not None:
+            return True, BUDGET_EXCEEDED_TEXT
+        limit = int(await setting("rate_limit.per_user_per_min") or 0)
+        if limit > 0:
+            allowed, first = self._limiter.hit((msg.account_id, msg.scene, msg.sender_openid), limit)
+            if not allowed:
+                if first:
+                    await self._db.events.add(
+                        "warning",
+                        "rate_limit",
+                        f"用户 {msg.sender_openid[-6:]} 每分钟触发超过 {limit} 次，暂不回复",
+                        account_id=msg.account_id,
+                    )
+                return True, RATE_LIMITED_TEXT if first else None
+        return False, None
+
+    async def _budget_exceeded(self, account_id: int) -> str | None:
+        """全局预算按所有账号合计，账号预算只算这个账号；任何一个用完都暂停。返回用完的是哪一个。"""
+        db = self._db
+        today = start_of_local_day_ms()
+        checks = [
+            ("account", (await db.settings.list("account", account_id)).get("budget.daily_usd"), account_id),
+            ("global", (await db.settings.list("global", 0)).get("budget.daily_usd"), None),
+        ]
+        for scope, budget, scope_account in checks:
+            if budget is None or float(budget) <= 0:
+                continue
+            spent = await db.usage.cost_since(today, account_id=scope_account)
+            if spent < float(budget):
+                continue
+            key = (f"{scope}:{scope_account}", today)
+            if key not in self._budget_warned:
+                self._budget_warned.add(key)
+                label = "这个账号的每日预算" if scope == "account" else "全局每日预算"
+                await db.events.add(
+                    "warning",
+                    "budget",
+                    f"{label}已用完（已花 ${spent:.4f}，上限 ${float(budget):g}），今天暂停回复",
+                    account_id=account_id,
+                    data={"scope": scope, "spent_usd": round(spent, 6), "budget_usd": float(budget)},
+                )
+                await self._bus.publish(BusEvent("budget.exceeded", {"scope": scope, "account_id": account_id}))
+            return scope
+        return None
+
     async def _run_command(self, command: str, inbox: Any, msg: InboundMessage, ingested: Ingested) -> None:
         if command in ("清空", "clear"):
             await self._db.conversations.clear_history(ingested.conversation_id)
             text = CLEARED_TEXT
         else:
             text = HELP_TEXT
+        await self._system_reply(text, inbox, msg, ingested)
+
+    async def _system_reply(self, text: str, inbox: Any, msg: InboundMessage, ingested: Ingested) -> None:
+        """不经过模型的固定回复（指令结果、提醒）；不进模型上下文。"""
         await self._db.conversations.save_turn_result(
             inbox_id=inbox.id,
             account_id=msg.account_id,

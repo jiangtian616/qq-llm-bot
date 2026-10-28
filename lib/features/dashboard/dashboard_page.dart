@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import '../../core/api/core_api_client.dart';
 import '../../core/api/models.dart';
 import '../../core/connection/connection_store.dart';
+import '../../core/ui/format.dart';
 import 'dashboard_controller.dart';
 
 class DashboardPage extends GetView<DashboardController> {
@@ -19,6 +20,8 @@ class DashboardPage extends GetView<DashboardController> {
         const _CoreStatusCard(),
         const SizedBox(height: 16),
         const _QQConnectionCard(),
+        const SizedBox(height: 16),
+        const _UsageCard(),
         const SizedBox(height: 16),
         const _EventsCard(),
       ],
@@ -232,6 +235,76 @@ class _QQConnectionCard extends GetView<DashboardController> {
       if (c.lastEventAt != null) '最近收到事件 ${_DashboardTime.format(c.lastEventAt!)}',
       if (c.state == 'error' && c.lastError != null) c.lastError!,
     ].join(' · ');
+  }
+}
+
+class _UsageCard extends GetView<DashboardController> {
+  const _UsageCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Obx(() {
+      final u = controller.usage.value;
+      if (u == null) return const SizedBox.shrink();
+      final budget = u.budgetUsd;
+      final ratio = budget == null || budget <= 0 ? null : (u.costUsd / budget).clamp(0.0, 1.0);
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('今日用量', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 40,
+                runSpacing: 12,
+                children: [
+                  _Stat(label: '费用', value: budget == null ? formatUsd(u.costUsd) : '${formatUsd(u.costUsd)} / ${formatUsd(budget)}'),
+                  _Stat(label: '问答', value: '${u.turns} 次${u.failed > 0 ? '（失败 ${u.failed}）' : ''}'),
+                  _Stat(label: '输入 token', value: '${u.inputTokens}${u.cacheReadTokens > 0 ? '（缓存命中 ${u.cacheReadTokens}）' : ''}'),
+                  _Stat(label: '输出 token', value: '${u.outputTokens}'),
+                ],
+              ),
+              if (ratio != null) ...[
+                const SizedBox(height: 12),
+                LinearProgressIndicator(
+                  value: ratio,
+                  color: ratio >= 1 ? theme.colorScheme.error : null,
+                  minHeight: 6,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                if (ratio >= 1)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text('今天的预算已用完，机器人暂停回复，明天自动恢复', style: TextStyle(color: theme.colorScheme.error)),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _Stat extends StatelessWidget {
+  const _Stat({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+        Text(value, style: theme.textTheme.titleMedium),
+      ],
+    );
   }
 }
 

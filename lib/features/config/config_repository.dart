@@ -52,4 +52,6 @@ class ConfigRepository {
   }
 
   Future<void> putGlobalSetting(String key, Object? value) => _api.putSetting(key, value);
+
+  Future<({int deleted, String? backup})> runMaintenance() => _api.runMaintenance();
 }

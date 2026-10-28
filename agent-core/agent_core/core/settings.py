@@ -17,6 +17,13 @@ DEFAULTS: dict[str, Any] = {
     "reply.max_chunks": None,
     # 当前历史超过这么多轮就自动开始新一段（epoch 加 1）
     "history.max_turns": 20,
+    # 每个用户每分钟最多触发几次回复；0 表示不限
+    "rate_limit.per_user_per_min": 10,
+    # 每日费用上限（美元），超过就暂停回复并提醒；为空表示不限。全局和账号各算各的
+    "budget.daily_usd": None,
+    # 聊天记录、收件箱原始事件的保留天数；0 表示永久
+    "retention.messages_days": 30,
+    "retention.raw_events_days": 30,
     # 核心服务启动后是否自动连接（账号级）
     "connection.auto_connect": False,
 }

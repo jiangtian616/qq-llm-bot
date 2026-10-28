@@ -22,6 +22,7 @@ class DashboardRepository {
   Future<void> refresh() => store.refresh();
 
   Future<List<AccountInfo>> accounts() async => await store.api?.listAccounts() ?? const [];
+  Future<UsageToday?> usageToday() async => store.api?.usageToday();
   Future<void> startConnection(int id) async => store.api?.startConnection(id);
   Future<void> stopConnection(int id) async => store.api?.stopConnection(id);
   Future<void> startCore() => processes.start();

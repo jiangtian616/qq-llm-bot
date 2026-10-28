@@ -15,6 +15,9 @@ class ConfigController extends GetxController {
   final loading = false.obs;
   final error = RxnString();
 
+  /// 「限频、预算与数据保留」卡片上的提示：(内容, 是否错误)。
+  final limitsNotice = Rxn<(String, bool)>();
+
   bool get coreRunning => repository.coreStatus.value == CoreStatus.running;
 
   @override
@@ -80,4 +83,13 @@ class ConfigController extends GetxController {
   Future<String?> updateProfile(int id, Map<String, dynamic> fields) => run(() => repository.updateProfile(id, fields));
 
   Future<String?> setSetting(String key, Object? value) => run(() => repository.putGlobalSetting(key, value));
+
+  /// 一次保存多个配置项；全部成功才返回 null。
+  Future<String?> setSettings(Map<String, Object?> values) => run(() async {
+        for (final e in values.entries) {
+          await repository.putGlobalSetting(e.key, e.value);
+        }
+      });
+
+  Future<({int deleted, String? backup})> runMaintenance() => repository.runMaintenance();
 }

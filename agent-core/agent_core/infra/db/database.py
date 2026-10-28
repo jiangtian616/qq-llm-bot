@@ -10,9 +10,11 @@ from agent_core.infra.db.repos import (
     ConversationRepo,
     EventRepo,
     InboxRepo,
+    MaintenanceRepo,
     OutboxRepo,
     ProfileRepo,
     SettingsRepo,
+    UsageRepo,
 )
 
 
@@ -27,6 +29,8 @@ class Database:
         self.inbox = InboxRepo(sessions)
         self.conversations = ConversationRepo(sessions)
         self.outbox = OutboxRepo(sessions)
+        self.usage = UsageRepo(sessions)
+        self.maintenance = MaintenanceRepo(sessions)
 
     async def close(self) -> None:
         await self.engine.dispose()

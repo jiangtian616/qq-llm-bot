@@ -49,10 +49,15 @@ class ConfigPage extends GetView<ConfigController> {
             const SizedBox(height: 16),
           ],
           const _BehaviorCard(),
+          const SizedBox(height: 16),
+          _LimitsCard(key: ValueKey(_limitsKey(controller.settings))),
         ],
       );
     });
   }
+
+  /// 配置变了就用新值重建输入框；保存结果的提示放在 controller 里，重建后还在。
+  static String _limitsKey(Map<String, dynamic> s) => [for (final k in _LimitsCardState.keys) s[k]].join('|');
 
   static String _profileKey(ProfileInfo p) => '${p.id}|${p.name}|${p.model}|${p.apiKeyHint}|${p.params}|${p.systemPrompt.hashCode}';
 }
@@ -457,6 +462,133 @@ class _BehaviorCard extends GetView<ConfigController> {
             ],
           );
         }),
+      ),
+    );
+  }
+}
+
+// ---------------- 限频、预算与数据保留 ----------------
+
+class _LimitsCard extends StatefulWidget {
+  const _LimitsCard({super.key});
+
+  @override
+  State<_LimitsCard> createState() => _LimitsCardState();
+}
+
+class _LimitsCardState extends State<_LimitsCard> {
+  static const keys = [
+    'rate_limit.per_user_per_min',
+    'budget.daily_usd',
+    'retention.messages_days',
+    'retention.raw_events_days',
+  ];
+
+  final _c = Get.find<ConfigController>();
+  late final Map<String, TextEditingController> _fields = {
+    for (final k in keys) k: TextEditingController(text: _c.settings[k] == null ? '' : '${_c.settings[k]}'),
+  };
+  bool _saving = false;
+  bool _running = false;
+
+  @override
+  void dispose() {
+    for (final f in _fields.values) {
+      f.dispose();
+    }
+    super.dispose();
+  }
+
+  void _show(String message, {bool error = false}) => _c.limitsNotice.value = (message, error);
+
+  Future<void> _save() async {
+    final values = <String, Object?>{};
+    for (final k in ['rate_limit.per_user_per_min', 'retention.messages_days', 'retention.raw_events_days']) {
+      final v = int.tryParse(_fields[k]!.text.trim());
+      if (v == null || v < 0) return _show('限频和保留天数要填不小于 0 的整数', error: true);
+      values[k] = v;
+    }
+    final budgetText = _fields['budget.daily_usd']!.text.trim();
+    if (budgetText.isEmpty) {
+      values['budget.daily_usd'] = null;
+    } else {
+      final budget = double.tryParse(budgetText);
+      if (budget == null || budget <= 0) return _show('每日费用上限要填大于 0 的数字，留空表示不限', error: true);
+      values['budget.daily_usd'] = budget;
+    }
+    setState(() => _saving = true);
+    final error = await _c.setSettings(values);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    _show(error ?? '已保存', error: error != null);
+  }
+
+  Future<void> _runNow() async {
+    setState(() => _running = true);
+    try {
+      final r = await _c.runMaintenance();
+      _show('已清理 ${r.deleted} 行超期数据${r.backup != null ? '，并备份了数据库' : '；今天已经备份过'}');
+    } on Object catch (e) {
+      _show(e.toString(), error: true);
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  Widget _field(String key, String label, String helper, {double width = 220}) => SizedBox(
+        width: width,
+        child: TextField(
+          controller: _fields[key],
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(labelText: label, helperText: helper),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('限频、预算与数据保留（全局）', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 24,
+              runSpacing: 12,
+              children: [
+                _field('rate_limit.per_user_per_min', '每个用户每分钟最多触发', '超过后只回一次提醒；0 表示不限'),
+                _field('budget.daily_usd', '每日费用上限（美元）', '用完后今天暂停回复；留空表示不限'),
+                _field('retention.messages_days', '聊天记录保留天数', '0 表示永久保留'),
+                _field('retention.raw_events_days', '原始事件保留天数', '收件箱里处理完的事件；0 表示永久'),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '核心服务每天清理一次超期数据，并备份数据库（保留最近 7 份）。'
+              '建议同时在 Claude Console 给 API Key 所在的工作区设花费上限。',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                FilledButton(onPressed: _saving ? null : _save, child: const Text('保存')),
+                const SizedBox(width: 12),
+                OutlinedButton(onPressed: _running ? null : _runNow, child: const Text('立即清理并备份')),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Obx(() {
+                    final notice = _c.limitsNotice.value;
+                    if (notice == null) return const SizedBox.shrink();
+                    return Text(notice.$1, style: TextStyle(color: notice.$2 ? theme.colorScheme.error : Colors.green));
+                  }),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -390,6 +390,40 @@ class SystemEventItem {
       );
 }
 
+/// 今天（本地日期）的用量，以及全局每日预算。
+class UsageToday {
+  const UsageToday({
+    required this.turns,
+    required this.failed,
+    required this.refused,
+    required this.inputTokens,
+    required this.outputTokens,
+    required this.cacheReadTokens,
+    required this.costUsd,
+    this.budgetUsd,
+  });
+
+  final int turns;
+  final int failed;
+  final int refused;
+  final int inputTokens;
+  final int outputTokens;
+  final int cacheReadTokens;
+  final double costUsd;
+  final double? budgetUsd;
+
+  factory UsageToday.fromJson(Map<String, dynamic> json) => UsageToday(
+        turns: json['turns'] as int,
+        failed: json['failed'] as int,
+        refused: json['refused'] as int,
+        inputTokens: json['input_tokens'] as int,
+        outputTokens: json['output_tokens'] as int,
+        cacheReadTokens: json['cache_read_tokens'] as int,
+        costUsd: (json['cost_usd'] as num).toDouble(),
+        budgetUsd: (json['budget_usd'] as num?)?.toDouble(),
+      );
+}
+
 DateTime? _time(Object? ms) => ms is int ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
 
 class CoreEvent {

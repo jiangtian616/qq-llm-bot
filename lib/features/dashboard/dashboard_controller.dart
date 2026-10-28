@@ -13,6 +13,7 @@ class DashboardController extends GetxController {
   final actionError = RxnString();
   final accounts = <AccountInfo>[].obs;
   final accountBusy = <int>{}.obs;
+  final usage = Rxn<UsageToday>();
 
   @override
   void onInit() {
@@ -20,8 +21,10 @@ class DashboardController extends GetxController {
     ever(_repo.status, (status) {
       if (status == CoreStatus.running) {
         loadAccounts();
+        loadUsage();
       } else {
         accounts.clear();
+        usage.value = null;
       }
     });
     ever(_repo.events, (events) {
@@ -29,7 +32,16 @@ class DashboardController extends GetxController {
         loadAccounts();
       }
     });
-    if (_repo.status.value == CoreStatus.running) loadAccounts();
+    debounce(_repo.events, (_) {
+      final events = _repo.events;
+      if (events.isNotEmpty && const {'turn.done', 'turn.failed', 'budget.exceeded', 'settings.changed'}.contains(events.first.topic)) {
+        loadUsage();
+      }
+    }, time: const Duration(milliseconds: 500));
+    if (_repo.status.value == CoreStatus.running) {
+      loadAccounts();
+      loadUsage();
+    }
   }
 
   Future<void> loadAccounts() async {
@@ -37,6 +49,14 @@ class DashboardController extends GetxController {
       accounts.assignAll(await _repo.accounts());
     } on Object catch (e) {
       actionError.value = e.toString();
+    }
+  }
+
+  Future<void> loadUsage() async {
+    try {
+      usage.value = await _repo.usageToday();
+    } on Object {
+      // 用量只是展示，取不到就算了。
     }
   }
 

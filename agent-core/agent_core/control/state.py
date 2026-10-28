@@ -26,6 +26,7 @@ class ControlState:
     providers: Any = None
     wake_inbox: Any = None
     wake_outbox: Any = None
+    maintenance: Any = None
     platform: str = "qq"
     transport: str = "websocket"
     started_at: float = field(default_factory=time.time)

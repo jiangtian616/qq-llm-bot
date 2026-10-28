@@ -132,6 +132,22 @@ class CoreApiClient {
     return (inbox: counts(json['inbox']), outbox: counts(json['outbox']));
   }
 
+  // ---- 用量与维护 ----
+
+  Future<UsageToday> usageToday() async => UsageToday.fromJson(await _get('/usage/today') as Map<String, dynamic>);
+
+  /// 立即执行一次每日维护：清理超期数据、备份数据库。返回删除的行数和备份文件。
+  Future<({int deleted, String? backup})> runMaintenance() async {
+    final json = await _send('POST', '/maintenance/run') as Map<String, dynamic>;
+    var deleted = 0;
+    for (final a in json['accounts'] as List<dynamic>) {
+      (a as Map<String, dynamic>).forEach((k, v) {
+        if (k != 'account_id' && k != 'epoch_bumped') deleted += v as int;
+      });
+    }
+    return (deleted: deleted, backup: json['backup'] as String?);
+  }
+
   // ---- 日志 ----
 
   Future<List<SystemEventItem>> systemEvents({int limit = 200, String? level}) async => [

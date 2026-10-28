@@ -11,3 +11,5 @@ DEFAULT_SYSTEM_PROMPT = (
 CLEARED_TEXT = "已清空对话历史，接下来是新的对话。"
 HELP_TEXT = "可用指令：\n/清空 —— 清空本会话的对话历史\n/帮助 —— 显示这条说明"
 EMPTY_REPLY_TEXT = "抱歉，我没想好怎么回答，换个说法试试？"
+RATE_LIMITED_TEXT = "你发得有点快，请过一分钟再来问我。"
+BUDGET_EXCEEDED_TEXT = "今天的使用额度已经用完了，明天再来找我吧。"

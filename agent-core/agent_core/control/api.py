@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from agent_core.control.auth import require_token
 from agent_core.control.state import ControlState
 from agent_core.core.bus import BusEvent
+from agent_core.core.clock import start_of_local_day_ms
 from agent_core.core.settings import DEFAULTS, SCOPES
 
 DEFAULT_INTENTS = 1 << 25  # GROUP_AND_C2C_EVENT：群聊和单聊事件
@@ -318,6 +319,19 @@ def build_router() -> APIRouter:
             }
             for e in await s.db.events.list(min(max(limit, 1), 500), level=level)
         ]
+
+    @r.get("/usage/today")
+    async def usage_today(request: Request) -> dict[str, Any]:
+        """今天（本地日期）的问答次数、token 和费用，以及全局每日预算。"""
+        s = _ctl(request)
+        summary = await s.db.usage.summary_since(start_of_local_day_ms())
+        budget = (await s.db.settings.list("global", 0)).get("budget.daily_usd")
+        return {**summary, "budget_usd": budget}
+
+    @r.post("/maintenance/run")
+    async def run_maintenance(request: Request) -> dict[str, Any]:
+        """立即执行一次每日维护：清理超期数据、备份数据库。"""
+        return await _ctl(request).maintenance.run_once()
 
     @r.get("/stats")
     async def stats(request: Request) -> dict[str, Any]:

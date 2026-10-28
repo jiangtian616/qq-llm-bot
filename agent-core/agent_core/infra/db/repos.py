@@ -617,6 +617,8 @@ class ConversationRepo(_Repo):
         neutral: list[NeutralMessage] = []
         last_answered = -1  # 最后一条已经进入过提供商历史的消息（回复，或触发了回复的提问）
         for m, contact in rows:
+            if m.direction == "out" and m.turn_id is None:
+                continue  # 系统回复（指令结果、限频和预算提醒）不进上下文
             if m.direction == "out":
                 neutral.append(NeutralMessage("assistant", m.content))
                 last_answered = len(neutral) - 1
@@ -722,6 +724,110 @@ class ConversationRepo(_Repo):
 
 def _attachment_dict(a: Any) -> dict[str, Any]:
     return {k: getattr(a, k) for k in ("content_type", "filename", "url", "width", "height", "size")}
+
+
+# ---------- 用量 ----------
+
+
+class UsageRepo(_Repo):
+    async def cost_since(self, since_ms: int, *, account_id: int | None = None) -> float:
+        stmt = (
+            select(func.coalesce(func.sum(Turn.cost_usd), 0.0))
+            .join(Conversation, Turn.conversation_id == Conversation.id)
+            .where(Turn.started_at >= since_ms)
+        )
+        if account_id is not None:
+            stmt = stmt.where(Conversation.account_id == account_id)
+        async with self._sessions() as s:
+            return float(await s.scalar(stmt) or 0.0)
+
+    async def summary_since(self, since_ms: int) -> dict[str, Any]:
+        async with self._sessions() as s:
+            row = (
+                await s.execute(
+                    select(
+                        func.count(Turn.id),
+                        func.coalesce(func.sum(case((Turn.status == "succeeded", 1), else_=0)), 0),
+                        func.coalesce(func.sum(case((Turn.status == "refused", 1), else_=0)), 0),
+                        func.coalesce(func.sum(case((Turn.status == "failed", 1), else_=0)), 0),
+                        func.coalesce(func.sum(Turn.input_tokens), 0),
+                        func.coalesce(func.sum(Turn.output_tokens), 0),
+                        func.coalesce(func.sum(Turn.cache_read_tokens), 0),
+                        func.coalesce(func.sum(Turn.cost_usd), 0.0),
+                    ).where(Turn.started_at >= since_ms)
+                )
+            ).one()
+        keys = ("turns", "succeeded", "refused", "failed", "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd")
+        return dict(zip(keys, row, strict=True))
+
+
+# ---------- 数据清理 ----------
+
+
+class MaintenanceRepo(_Repo):
+    async def purge_messages(self, account_id: int, cutoff_ms: int) -> dict[str, int]:
+        """删除这个账号超期的聊天记录（messages、provider_messages、turns、已结束的 outbox），会话本身保留。
+
+        如果删到了某个会话当前正在用的历史，把它的 epoch 加 1，避免带着残缺的历史调模型。
+        """
+        conv_ids = select(Conversation.id).where(Conversation.account_id == account_id).scalar_subquery()
+        old_messages = select(Message.id).where(
+            Message.conversation_id.in_(conv_ids), Message.created_at < cutoff_ms
+        ).scalar_subquery()
+        async with self._sessions.begin() as s:
+            affected = (
+                await s.scalars(
+                    select(Message.conversation_id)
+                    .join(Conversation, Message.conversation_id == Conversation.id)
+                    .where(
+                        Conversation.account_id == account_id,
+                        Message.created_at < cutoff_ms,
+                        Message.history_epoch == Conversation.history_epoch,
+                    )
+                    .distinct()
+                )
+            ).all()
+            if affected:
+                await s.execute(
+                    update(Conversation)
+                    .where(Conversation.id.in_(affected))
+                    .values(history_epoch=Conversation.history_epoch + 1)
+                )
+            outbox = await s.execute(
+                delete(Outbox).where(
+                    Outbox.conversation_id.in_(conv_ids),
+                    Outbox.created_at < cutoff_ms,
+                    Outbox.status.not_in(("pending", "sending")),
+                )
+            )
+            provider_messages = await s.execute(
+                delete(ProviderMessage).where(
+                    ProviderMessage.conversation_id.in_(conv_ids), ProviderMessage.created_at < cutoff_ms
+                )
+            )
+            turns = await s.execute(delete(Turn).where(Turn.inbound_message_id.in_(old_messages)))
+            messages = await s.execute(
+                delete(Message).where(Message.conversation_id.in_(conv_ids), Message.created_at < cutoff_ms)
+            )
+        return {
+            "messages": messages.rowcount,
+            "provider_messages": provider_messages.rowcount,
+            "turns": turns.rowcount,
+            "outbox": outbox.rowcount,
+            "epoch_bumped": len(affected),
+        }
+
+    async def purge_raw_events(self, account_id: int, cutoff_ms: int) -> int:
+        """删除已处理完的超期收件箱事件；还没处理完的不动。"""
+        async with self._sessions.begin() as s:
+            result = await s.execute(
+                delete(InboxEvent).where(
+                    InboxEvent.account_id == account_id,
+                    InboxEvent.received_at < cutoff_ms,
+                    InboxEvent.status.in_(("done", "ignored", "expired", "failed")),
+                )
+            )
+        return result.rowcount
 
 
 # ---------- 发件箱 ----------

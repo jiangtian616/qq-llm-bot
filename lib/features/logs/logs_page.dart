@@ -15,6 +15,7 @@ const _categories = {
   'account': '账号',
   'cleanup': '清理',
   'budget': '预算',
+  'rate_limit': '限频',
 };
 
 class LogsPage extends GetView<LogsController> {

@@ -38,6 +38,7 @@ from agent_core.infra.secrets import SecretStore
 from agent_core.infra.single_instance import AlreadyRunningError, SingleInstanceLock
 from agent_core.pipeline.connections import ConnectionManager
 from agent_core.pipeline.dispatcher import Dispatcher
+from agent_core.pipeline.maintenance import MaintenanceWorker
 from agent_core.pipeline.outbox import OutboxWorker
 
 log = logging.getLogger("agent_core")
@@ -141,15 +142,20 @@ async def _serve(
     outbox = OutboxWorker(db=db, connections=connections, bus=bus)
     engine = AgentEngine(db=db, providers=providers, bus=bus, on_outbox=outbox.wake)
     dispatcher = Dispatcher(db=db, connections=connections, engine=engine)
+    maintenance = MaintenanceWorker(
+        db=db, bus=bus, database_path=paths.database, backups_dir=paths.backups_dir
+    )
 
     # 停止钩子按注册的反序执行：先断开 QQ 连接（不再接新事件、保存 seq），再等在途回复入库、发完。
     lifecycle.on_stop("database", db.close)
     lifecycle.on_stop("providers", providers.close_all)
+    lifecycle.on_stop("maintenance", maintenance.stop)
     lifecycle.on_stop("outbox", outbox.stop)
     lifecycle.on_stop("dispatcher", lambda: dispatcher.stop(timeout=8))
     lifecycle.on_stop("connections", connections.stop_all)
     outbox.start()
     dispatcher.start()
+    maintenance.start()
 
     state = ControlState(
         token=generate_token(),
@@ -165,6 +171,7 @@ async def _serve(
         providers=providers,
         wake_inbox=dispatcher.wake,
         wake_outbox=outbox.wake,
+        maintenance=maintenance,
         platform=config.plugins.channel,
         transport=config.plugins.transport,
     )
