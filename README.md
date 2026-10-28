@@ -2,7 +2,7 @@
 
 在你自己电脑上运行的 **QQ 官方机器人 + 大模型对话 Agent**。机器人通过 QQ 开放平台的官方接口收发群聊和单聊消息，用 Claude（以后可换其他模型）生成回复；桌面端负责管理，支持 **Windows / macOS / Linux**。
 
-> **当前状态：第一阶段（项目骨架）。** 核心服务、本机控制接口、数据库迁移、桌面端仪表盘已经可以运行；QQ 收发全链路、配置页等还在开发中，见[路线图](#路线图)。
+> **当前状态：最小可用版本。** 可以在桌面端添加机器人、填写 API Key、启动连接，在群聊和单聊里收发消息；会话、消息队列、日志页和限频、预算等还在开发中，见[路线图](#路线图)。
 
 <!-- 截图占位：仪表盘、会话、配置页 -->
 <!-- ![仪表盘](docs/screenshots/dashboard.png) -->
@@ -55,9 +55,12 @@
 
 ### 3. 运行
 
-目前还没有发布安装包，请先[从源码构建](#从源码构建)。启动桌面端后，仪表盘会自动拉起核心服务并显示它的健康状态。
+目前还没有发布安装包，请先[从源码构建](#从源码构建)。
 
-> 添加机器人账号、填写 AppSecret / API Key、启动 QQ 连接的界面在下一阶段提供。
+1. 启动桌面端，仪表盘会自动拉起核心服务。
+2. 在「配置」页点「添加机器人」，填写 AppID 和 AppSecret（只存系统密钥库）；在「模型配置」里填写 Claude API Key 并保存。
+3. 回到仪表盘，在「QQ 连接」里点「启动连接」，状态变成「在线」后，在沙箱群里 @机器人 或私聊它试试。
+4. 群聊里发 `/清空` 可以清空这个会话的对话历史，`/帮助` 查看指令。
 
 ## 从源码构建
 
@@ -119,7 +122,11 @@ macOS / Linux 把 `windows` 换成 `macos` / `linux`。开发模式下，桌面�
 | `GET /version` | 版本号和接口版本号（桌面端用来检查两端是否兼容） |
 | `POST /shutdown` | 平稳停止 |
 | `WS /events` | 事件流：连接状态、消息、日志 |
-| `POST /accounts/{id}/connection/start`、`/stop` | 启停 QQ 连接（占位，下一阶段实现） |
+| `GET/POST/PATCH/DELETE /accounts` | 机器人账号；AppSecret 只进不出，返回时只给末 4 位 |
+| `POST /accounts/{id}/connection/start`、`/stop` | 启停 QQ 连接 |
+| `GET/POST/PATCH/DELETE /profiles` | 模型配置和 API Key |
+| `GET/PUT /settings` | 分层配置（全局 / 账号 / 会话） |
+| `GET /system-events`、`GET /stats` | 运行事件、收件箱和发件箱统计 |
 
 ### 数据库迁移
 
@@ -128,6 +135,18 @@ macOS / Linux 把 `windows` 换成 `macos` / `linux`。开发模式下，桌面�
 ```bash
 cd agent-core && uv run alembic revision --autogenerate -m "说明"
 ```
+
+### 开发调试用的环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `QQ_LLM_BOT_DATA_DIR` | 数据目录 |
+| `QQ_LLM_BOT_CORE` | 桌面端拉起的核心服务可执行文件 |
+| `QQ_LLM_BOT_QQ_API_BASE` | QQ OpenAPI 地址，指向本地模拟服务做联调 |
+| `ANTHROPIC_BASE_URL` | Claude API 地址（官方 SDK 自带） |
+| `QQ_LLM_BOT_SECRETS=file` | 不用系统密钥库，密钥存数据目录里权限 0600 的文件 |
+
+桌面端拉起核心服务时，这些变量会传给核心服务。
 
 ## 目录结构
 
@@ -157,8 +176,9 @@ qq-llm-bot/
 - [x] 项目骨架：核心服务、控制接口（令牌鉴权、平稳停止、事件流）、13 张表的迁移、密钥存储、插件注册表
 - [x] 桌面端骨架：仪表盘（拉起 / 停止核心服务、健康状态、实时事件）、托盘、单实例、开机自启
 - [x] QQ：access_token 管理、WebSocket 连接骨架（Identify / 心跳 / Resume）
-- [ ] QQ 收发全链路：收件箱 → 中间件 → 调用 Claude → 发件箱，按错误码重试
-- [ ] 账号管理与配置页：添加机器人、填写 AppSecret / API Key、分层配置
+- [x] QQ 收发全链路：收件箱 → 调度 → 调用 Claude → 发件箱，按错误码重试，崩溃后接着处理
+- [x] 账号管理与配置页：添加机器人、填写 AppSecret / API Key、模型配置、全局行为配置
+- [ ] 账号级和会话级配置的界面（接口已支持）
 - [ ] 会话页、消息队列页、日志页；群消息接收设置（只读）
 - [ ] 限频、每日预算、指令（如 `/清空`）、数据保留与清理、每日备份
 - [ ] 打包与分发：Nuitka 打包核心服务，三个平台的免安装包和安装包（GitHub Actions）
