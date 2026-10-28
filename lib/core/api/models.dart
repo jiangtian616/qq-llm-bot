@@ -38,6 +38,99 @@ class HealthInfo {
       );
 }
 
+/// QQ 连接状态：stopped / connecting / online / reconnecting / error。
+class ConnectionInfo {
+  const ConnectionInfo({required this.state, this.lastError, this.lastReadyAt, this.lastEventAt});
+
+  final String state;
+  final String? lastError;
+  final DateTime? lastReadyAt;
+  final DateTime? lastEventAt;
+
+  bool get isActive => state == 'connecting' || state == 'online' || state == 'reconnecting';
+
+  factory ConnectionInfo.fromJson(Map<String, dynamic> json) => ConnectionInfo(
+        state: json['state'] as String,
+        lastError: json['last_error'] as String?,
+        lastReadyAt: _time(json['last_ready_at']),
+        lastEventAt: _time(json['last_event_at']),
+      );
+}
+
+class AccountInfo {
+  const AccountInfo({
+    required this.id,
+    required this.appId,
+    required this.displayName,
+    required this.isSandbox,
+    required this.enabled,
+    required this.autoConnect,
+    required this.secretSet,
+    required this.secretHint,
+    required this.connection,
+  });
+
+  final int id;
+  final String appId;
+  final String displayName;
+  final bool isSandbox;
+  final bool enabled;
+  final bool autoConnect;
+  final bool secretSet;
+  final String? secretHint;
+  final ConnectionInfo connection;
+
+  factory AccountInfo.fromJson(Map<String, dynamic> json) => AccountInfo(
+        id: json['id'] as int,
+        appId: json['app_id'] as String,
+        displayName: json['display_name'] as String,
+        isSandbox: json['is_sandbox'] as bool,
+        enabled: json['enabled'] as bool,
+        autoConnect: json['auto_connect'] as bool,
+        secretSet: json['secret_set'] as bool,
+        secretHint: json['secret_hint'] as String?,
+        connection: ConnectionInfo.fromJson(json['connection'] as Map<String, dynamic>),
+      );
+}
+
+class ProfileInfo {
+  const ProfileInfo({
+    required this.id,
+    required this.name,
+    required this.provider,
+    required this.model,
+    required this.systemPrompt,
+    required this.params,
+    required this.apiKeySet,
+    required this.apiKeyHint,
+    required this.isDefault,
+  });
+
+  final int id;
+  final String name;
+  final String provider;
+  final String model;
+  final String systemPrompt;
+  final Map<String, dynamic> params;
+  final bool apiKeySet;
+  final String? apiKeyHint;
+  final bool isDefault;
+
+  factory ProfileInfo.fromJson(Map<String, dynamic> json) => ProfileInfo(
+        id: json['id'] as int,
+        name: json['name'] as String,
+        provider: json['provider'] as String,
+        model: json['model'] as String,
+        systemPrompt: json['system_prompt'] as String,
+        params: json['params'] as Map<String, dynamic>,
+        apiKeySet: json['api_key_set'] as bool,
+        apiKeyHint: json['api_key_hint'] as String?,
+        isDefault: json['is_default'] as bool,
+      );
+}
+
+DateTime? _time(Object? ms) => ms is int ? DateTime.fromMillisecondsSinceEpoch(ms) : null;
+
 class CoreEvent {
   const CoreEvent({required this.topic, required this.ts, required this.data});
 

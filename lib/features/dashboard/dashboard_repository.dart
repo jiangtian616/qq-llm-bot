@@ -20,6 +20,10 @@ class DashboardRepository {
   bool get apiVersionMismatch => store.apiVersionMismatch;
 
   Future<void> refresh() => store.refresh();
+
+  Future<List<AccountInfo>> accounts() async => await store.api?.listAccounts() ?? const [];
+  Future<void> startConnection(int id) async => store.api?.startConnection(id);
+  Future<void> stopConnection(int id) async => store.api?.stopConnection(id);
   Future<void> startCore() => processes.start();
   Future<void> stopCore() => processes.stop();
 }

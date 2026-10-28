@@ -163,21 +163,98 @@ class _HealthTable extends StatelessWidget {
   }
 }
 
-class _QQConnectionCard extends StatelessWidget {
+class _QQConnectionCard extends GetView<DashboardController> {
   const _QQConnectionCard();
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        leading: const Icon(Icons.forum_outlined),
-        title: const Text('QQ 连接'),
-        subtitle: const Text('添加机器人账号、启动 / 停止 WebSocket 连接将在下一阶段提供。'),
-        trailing: FilledButton.tonal(onPressed: null, child: const Text('启动连接')),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Obx(() {
+          final running = controller.status.value == CoreStatus.running;
+          final accounts = controller.accounts;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('QQ 连接', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 8),
+              if (running && controller.actionError.value != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(controller.actionError.value!, style: TextStyle(color: theme.colorScheme.error)),
+                ),
+              if (!running)
+                Text('核心服务运行后才能连接 QQ。', style: theme.textTheme.bodyMedium)
+              else if (accounts.isEmpty)
+                Row(
+                  children: [
+                    Expanded(child: Text('还没有添加机器人账号。', style: theme.textTheme.bodyMedium)),
+                    // 只按路由名跳转，不引用配置页的代码。
+                    FilledButton.tonal(onPressed: () => Get.offNamed<void>('/config'), child: const Text('去配置页添加')),
+                  ],
+                ),
+              for (final a in accounts)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: _ConnectionDot(state: a.connection.state),
+                  title: Text('${a.displayName}${a.isSandbox ? '（沙箱）' : ''}'),
+                  subtitle: Text(_connectionText(a)),
+                  trailing: controller.accountBusy.contains(a.id)
+                      ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : a.connection.isActive
+                          ? OutlinedButton(onPressed: () => controller.toggleConnection(a), child: const Text('停止连接'))
+                          : FilledButton(
+                              onPressed: a.secretSet && a.enabled ? () => controller.toggleConnection(a) : null,
+                              child: const Text('启动连接'),
+                            ),
+                ),
+            ],
+          );
+        }),
       ),
     );
   }
+
+  static String _connectionText(AccountInfo a) {
+    final c = a.connection;
+    final state = switch (c.state) {
+      'online' => '在线',
+      'connecting' => '连接中',
+      'reconnecting' => '断线重连中',
+      'error' => '出错',
+      _ => '未连接',
+    };
+    return [
+      state,
+      if (!a.secretSet) '没有 AppSecret',
+      if (c.lastEventAt != null) '最近收到事件 ${_DashboardTime.format(c.lastEventAt!)}',
+      if (c.state == 'error' && c.lastError != null) c.lastError!,
+    ].join(' · ');
+  }
+}
+
+class _ConnectionDot extends StatelessWidget {
+  const _ConnectionDot({required this.state});
+
+  final String state;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (state) {
+      'online' => Colors.green,
+      'connecting' || 'reconnecting' => Colors.orange,
+      'error' => Colors.red,
+      _ => Colors.grey,
+    };
+    return Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle));
+  }
+}
+
+class _DashboardTime {
+  static String format(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
 }
 
 class _EventsCard extends GetView<DashboardController> {
@@ -216,8 +293,7 @@ class _EventsCard extends GetView<DashboardController> {
     );
   }
 
-  static String _time(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
+  static String _time(DateTime t) => _DashboardTime.format(t);
 }
 
 class _Banner extends StatelessWidget {

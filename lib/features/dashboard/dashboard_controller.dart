@@ -11,6 +11,51 @@ class DashboardController extends GetxController {
 
   final busy = false.obs;
   final actionError = RxnString();
+  final accounts = <AccountInfo>[].obs;
+  final accountBusy = <int>{}.obs;
+
+  @override
+  void onInit() {
+    super.onInit();
+    ever(_repo.status, (status) {
+      if (status == CoreStatus.running) {
+        loadAccounts();
+      } else {
+        accounts.clear();
+      }
+    });
+    ever(_repo.events, (events) {
+      if (events.isNotEmpty && const {'connection.state', 'accounts.changed'}.contains(events.first.topic)) {
+        loadAccounts();
+      }
+    });
+    if (_repo.status.value == CoreStatus.running) loadAccounts();
+  }
+
+  Future<void> loadAccounts() async {
+    try {
+      accounts.assignAll(await _repo.accounts());
+    } on Object catch (e) {
+      actionError.value = e.toString();
+    }
+  }
+
+  Future<void> toggleConnection(AccountInfo account) async {
+    accountBusy.add(account.id);
+    actionError.value = null;
+    try {
+      if (account.connection.isActive) {
+        await _repo.stopConnection(account.id);
+      } else {
+        await _repo.startConnection(account.id);
+      }
+      await loadAccounts();
+    } on Object catch (e) {
+      actionError.value = e.toString();
+    } finally {
+      accountBusy.remove(account.id);
+    }
+  }
 
   Rx<CoreStatus> get status => _repo.status;
   Rxn<HealthInfo> get health => _repo.health;
