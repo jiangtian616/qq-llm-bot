@@ -12,14 +12,14 @@ import platform
 import time
 
 from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import JSONResponse
 
 from agent_core import API_VERSION, __version__
+from agent_core.control.api import build_router
 from agent_core.control.auth import require_token, websocket_authorized
 from agent_core.control.state import ControlState
 
 
-def create_app(state: ControlState) -> FastAPI:
+def create_app(state: ControlState, provider_names: list[str] | None = None) -> FastAPI:
     app = FastAPI(
         title="qq-llm-bot agent-core",
         version=__version__,
@@ -27,7 +27,9 @@ def create_app(state: ControlState) -> FastAPI:
         redoc_url=None,
     )
     app.state.control = state
+    app.state.provider_names = provider_names or []
     app.include_router(_router())
+    app.include_router(build_router())
     app.add_api_websocket_route("/events", _events)
     return app
 
@@ -70,24 +72,7 @@ def _router() -> APIRouter:
         _ctl(request).lifecycle.request_shutdown()
         return {"status": "shutting_down"}
 
-    @r.get("/accounts/{account_id}/connection")
-    async def connection_state(account_id: int) -> dict:
-        # TODO(下一阶段)：从 gateway_sessions 和连接状态机读取。
-        return {"account_id": account_id, "state": "stopped"}
-
-    @r.post("/accounts/{account_id}/connection/start")
-    async def connection_start(account_id: int) -> JSONResponse:
-        return _not_implemented("启动 QQ 连接")
-
-    @r.post("/accounts/{account_id}/connection/stop")
-    async def connection_stop(account_id: int) -> JSONResponse:
-        return _not_implemented("停止 QQ 连接")
-
     return r
-
-
-def _not_implemented(what: str) -> JSONResponse:
-    return JSONResponse({"detail": f"{what}：下一阶段实现"}, status_code=status.HTTP_501_NOT_IMPLEMENTED)
 
 
 async def _events(ws: WebSocket) -> None:

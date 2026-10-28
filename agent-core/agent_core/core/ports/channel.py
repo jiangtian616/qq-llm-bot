@@ -10,6 +10,7 @@ from agent_core.core.models import (
     RawEvent,
     ReplyWindow,
     Scene,
+    SendErrorClass,
     SendResult,
 )
 from agent_core.core.ports.secrets import SecretReader
@@ -40,6 +41,10 @@ class ChannelAdapter(abc.ABC):
 
     @abc.abstractmethod
     def reply_window(self, scene: Scene) -> ReplyWindow: ...
+
+    def classify_send_error(self, error: Exception) -> SendErrorClass:
+        """按平台的错误码给发送失败分类；默认都当作可重试。"""
+        return SendErrorClass.RETRYABLE
 
     async def get_conversation_state(self, scene: Scene, target_openid: str) -> dict[str, Any] | None:
         """可选能力：查询会话在平台上的状态（如 QQ 群里的消息接收设置）。不支持时返回 None。"""

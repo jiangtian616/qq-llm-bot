@@ -12,6 +12,19 @@ class Scene(enum.StrEnum):
     C2C = "c2c"
 
 
+class SendErrorClass(enum.StrEnum):
+    """发送失败的分类，决定发件箱怎么处理这一行。"""
+
+    RETRYABLE = "retryable"
+    """网络错误、服务端错误、限流：逐次加长间隔重试，不超过截止时间。"""
+    ALREADY_SENT = "already_sent"
+    """去重错误：说明之前已经发出，直接标为已发送。"""
+    FATAL = "fatal"
+    """消息过长、被禁言等：直接标为失败。"""
+    EXPIRED = "expired"
+    """超过回复时间或回复次数：标为已过期。"""
+
+
 class Direction(enum.StrEnum):
     IN = "in"
     OUT = "out"
@@ -122,3 +135,4 @@ class GenerateResult:
     raw_assistant: Any = None
     """提供商的原始 assistant 消息（如 Claude 的完整 content 块），原样追加进该提供商的历史。"""
     stop_details: dict[str, Any] | None = None
+    cost_usd: float = 0.0

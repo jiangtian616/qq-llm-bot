@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from agent_core.core.bus import EventBus
 from agent_core.core.lifecycle import ServiceLifecycle
@@ -19,4 +20,10 @@ class ControlState:
     secret_backend: str
     plugins: dict[str, str]
     db_revision: str | None = None
+    db: Any = None
+    secrets: Any = None
+    connections: Any = None
+    providers: Any = None
+    platform: str = "qq"
+    transport: str = "websocket"
     started_at: float = field(default_factory=time.time)

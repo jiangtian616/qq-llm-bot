@@ -12,13 +12,19 @@ from agent_core.core.models import (
     RawEvent,
     ReplyWindow,
     Scene,
+    SendErrorClass,
     SendResult,
 )
 from agent_core.core.ports.channel import ChannelAdapter, ChannelContext
-from agent_core.plugins.channel_qq.constants import API_BASE
+from agent_core.plugins.channel_qq.constants import API_BASE, ErrorCode
+from agent_core.plugins.channel_qq.errors import QQApiError
 from agent_core.plugins.channel_qq.event_parser import EventParser
 from agent_core.plugins.channel_qq.openapi_sender import OpenApiSender
 from agent_core.plugins.channel_qq.token_manager import TokenManager
+
+_ALREADY_SENT = {ErrorCode.DUPLICATE_MSG_SEQ}
+_FATAL = {ErrorCode.MESSAGE_TOO_LONG, ErrorCode.MUTED}
+_EXPIRED = {ErrorCode.REPLY_EXPIRED_OR_LIMIT}
 
 # 被动回复：群聊 5 分钟内最多 5 次，单聊 60 分钟内最多 4 次。
 _REPLY_WINDOWS = {
@@ -60,6 +66,21 @@ class QQAdapter(ChannelAdapter):
             platform_ts=body.get("timestamp"),
             ref_idx=(body.get("ext_info") or {}).get("ref_idx"),
         )
+
+    def classify_send_error(self, error: Exception) -> SendErrorClass:
+        if not isinstance(error, QQApiError):
+            # 网络错误、超时等。
+            return SendErrorClass.RETRYABLE
+        if error.code in _ALREADY_SENT:
+            return SendErrorClass.ALREADY_SENT
+        if error.code in _FATAL:
+            return SendErrorClass.FATAL
+        if error.code in _EXPIRED:
+            return SendErrorClass.EXPIRED
+        status = error.http_status or 0
+        if 400 <= status < 500 and status != 429:
+            return SendErrorClass.FATAL
+        return SendErrorClass.RETRYABLE
 
     async def get_conversation_state(self, scene: Scene, target_openid: str) -> dict[str, Any] | None:
         if scene != Scene.GROUP:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -50,7 +51,9 @@ class SecretStore:
         self._fallback_file = fallback_file
         self._lock = threading.Lock()
         candidate = backend if backend is not None else keyring.get_keyring()
-        if _keyring_usable(candidate):
+        # 开发调试、无界面环境可以强制用文件存储：QQ_LLM_BOT_SECRETS=file
+        force_file = backend is None and os.environ.get("QQ_LLM_BOT_SECRETS") == "file"
+        if not force_file and _keyring_usable(candidate):
             self._backend: KeyringBackend | None = candidate
             self.kind = SecretBackendKind.KEYRING
         else:

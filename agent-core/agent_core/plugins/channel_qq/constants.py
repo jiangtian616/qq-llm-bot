@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import enum
+import os
 
-API_BASE = "https://api.bot.qq.com"
-TOKEN_URL = "https://api.bot.qq.com/app/getAppAccessToken"
+# 开发调试时可以用环境变量指向本地的模拟服务。
+API_BASE = os.environ.get("QQ_LLM_BOT_QQ_API_BASE", "https://api.bot.qq.com").rstrip("/")
+TOKEN_URL = f"{API_BASE}/app/getAppAccessToken"
 
 
 def secret_key(app_id: str) -> str:

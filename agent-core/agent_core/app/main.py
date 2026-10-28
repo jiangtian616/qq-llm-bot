@@ -13,23 +13,32 @@ import logging
 import os
 import socket
 import sys
+from typing import Any
 
 import uvicorn
 
 from agent_core import API_VERSION, __version__
 from agent_core.app.config import AppConfig, load_config
-from agent_core.app.registry import PluginNotFoundError, PluginRegistry
+from agent_core.agent.engine import AgentEngine
+from agent_core.agent.prompt import DEFAULT_SYSTEM_PROMPT
+from agent_core.agent.providers import ProviderPool
+from agent_core.app.registry import Assembly, PluginNotFoundError, PluginRegistry
 from agent_core.control.app import create_app
 from agent_core.control.auth import generate_token
 from agent_core.control.state import ControlState
 from agent_core.core.bus import EventBus
 from agent_core.core.lifecycle import ServiceLifecycle
+from agent_core.core.ports import LLMProvider, ProviderContext
+from agent_core.infra.db.database import Database
 from agent_core.infra.db.migrate import prune_backups, upgrade_to_head
 from agent_core.infra.fileperm import write_private_file
 from agent_core.infra.logging_setup import setup_logging
 from agent_core.infra.paths import DataDirError, DataPaths
 from agent_core.infra.secrets import SecretStore
 from agent_core.infra.single_instance import AlreadyRunningError, SingleInstanceLock
+from agent_core.pipeline.connections import ConnectionManager
+from agent_core.pipeline.dispatcher import Dispatcher
+from agent_core.pipeline.outbox import OutboxWorker
 
 log = logging.getLogger("agent_core")
 
@@ -72,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(paths.config_file)
             if args.port is not None:
                 config.control.port = args.port
-            assembly = PluginRegistry().assemble(config.plugins)
+            registry = PluginRegistry()
+            assembly = registry.assemble(config.plugins)
         except (PluginNotFoundError, TypeError, ValueError) as e:
             log.error("配置错误：%s", e)
             return EXIT_CONFIG
@@ -82,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         secrets = SecretStore(paths.secrets_file)
         log.info("密钥存储：%s（%s）", secrets.kind, secrets.backend_name)
 
-        asyncio.run(_serve(paths, config, secrets, assembly.describe(), revision))
+        asyncio.run(_serve(paths, config, secrets, registry, assembly, revision))
         return EXIT_OK
     finally:
         lock.release()
@@ -93,21 +103,69 @@ async def _serve(
     paths: DataPaths,
     config: AppConfig,
     secrets: SecretStore,
-    plugins: dict[str, str],
+    registry: PluginRegistry,
+    assembly: Assembly,
     db_revision: str | None,
 ) -> None:
     bus = EventBus()
     lifecycle = ServiceLifecycle()
+    db = Database(paths.database)
+    await _ensure_default_profile(db, config.plugins.provider)
+    released = await db.inbox.release_leases() + await db.outbox.release_leases()
+    if released:
+        log.info("接着处理上次没做完的 %s 条", released)
+
+    def make_provider(profile: Any) -> LLMProvider:
+        cls = registry.load("provider", profile.provider)
+        return cls(
+            ProviderContext(
+                secrets=secrets,
+                secret_ref=profile.secret_ref,
+                model=profile.model,
+                system_prompt=profile.system_prompt,
+                params=json.loads(profile.params_json or "{}"),
+            )
+        )
+
+    providers = ProviderPool(make_provider)
+    dispatcher: Dispatcher | None = None
+    connections = ConnectionManager(
+        db=db,
+        bus=bus,
+        secrets=secrets,
+        channel_cls=assembly.channel,
+        transport_cls=assembly.transport,
+        # 收件箱有新活时唤醒调度器；调度器在下面创建，这里调用时才取。
+        on_inbox=lambda: dispatcher.wake() if dispatcher else None,
+    )
+    outbox = OutboxWorker(db=db, connections=connections, bus=bus)
+    engine = AgentEngine(db=db, providers=providers, bus=bus, on_outbox=outbox.wake)
+    dispatcher = Dispatcher(db=db, connections=connections, engine=engine)
+
+    # 停止钩子按注册的反序执行：先断开 QQ 连接（不再接新事件、保存 seq），再等在途回复入库、发完。
+    lifecycle.on_stop("database", db.close)
+    lifecycle.on_stop("providers", providers.close_all)
+    lifecycle.on_stop("outbox", outbox.stop)
+    lifecycle.on_stop("dispatcher", lambda: dispatcher.stop(timeout=8))
+    lifecycle.on_stop("connections", connections.stop_all)
+    outbox.start()
+    dispatcher.start()
+
     state = ControlState(
         token=generate_token(),
         bus=bus,
         lifecycle=lifecycle,
         data_dir=paths.root,
         secret_backend=secrets.kind,
-        plugins=plugins,
+        plugins=assembly.describe(),
         db_revision=db_revision,
+        db=db,
+        secrets=secrets,
+        connections=connections,
+        providers=providers,
+        platform=config.plugins.channel,
+        transport=config.plugins.transport,
     )
-    # TODO(下一阶段)：按 channel_accounts 装配 QQ 连接，并把各自的 stop() 注册为停止钩子。
 
     # 自己绑定套接字，才能在端口为 0 时拿到实际端口。只监听 127.0.0.1。
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -116,7 +174,7 @@ async def _serve(
 
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(state),
+            create_app(state, provider_names=registry.available("provider")),
             log_config=None,
             access_log=False,
             timeout_graceful_shutdown=GRACEFUL_TIMEOUT_S,
@@ -143,14 +201,29 @@ async def _serve(
         ),
     )
     log.info("控制接口：http://127.0.0.1:%s", port)
+    auto_connect = asyncio.create_task(connections.start_auto_connect())
     try:
         await server.serve(sockets=[sock])
     finally:
         watcher.cancel()
+        auto_connect.cancel()
         # Ctrl+C / SIGTERM 走这里；/shutdown 已经执行过的话不会重复执行。
         await lifecycle.run_stop_hooks()
         with contextlib.suppress(FileNotFoundError):
             paths.control_file.unlink()
+
+
+async def _ensure_default_profile(db: Database, provider: str) -> None:
+    """第一次启动时建一个默认模型配置；API Key 由用户在桌面端填写。"""
+    if await db.profiles.list():
+        return
+    await db.profiles.create(
+        name="默认",
+        provider=provider,
+        model="claude-haiku-5-5",
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        params={"effort": "low", "max_tokens": 1500},
+    )
 
 
 if __name__ == "__main__":
