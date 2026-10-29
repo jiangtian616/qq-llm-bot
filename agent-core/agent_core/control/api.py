@@ -64,6 +64,7 @@ class ProfileCreate(BaseModel):
 
 class ProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1)
+    provider: str | None = Field(default=None, min_length=1)
     model: str | None = Field(default=None, min_length=1)
     system_prompt: str | None = None
     params: dict[str, Any] | None = None
@@ -266,12 +267,24 @@ def build_router() -> APIRouter:
     async def update_profile(profile_id: int, body: ProfileUpdate, request: Request) -> dict[str, Any]:
         s = _ctl(request)
         profile = await get_profile(s, profile_id)
-        if body.model is not None or body.params is not None:
+        provider_changed = body.provider is not None and body.provider != profile.provider
+        # 各家的 API Key 不通用，换提供商时必须一起换 Key。
+        if provider_changed and not body.api_key:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "换了提供商，要同时填写新提供商的 API Key")
+        if provider_changed and body.model is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "换了提供商，要同时选择这个提供商的模型")
+        if provider_changed or body.model is not None or body.params is not None:
             params = body.params if body.params is not None else json.loads(profile.params_json or "{}")
-            check_profile(request, profile.provider, body.model or profile.model, params)
-        if body.api_key:
-            s.secrets.set_secret(profile.secret_ref, body.api_key.strip())
+            check_profile(request, body.provider or profile.provider, body.model or profile.model, params)
         fields = body.model_dump(exclude_none=True, exclude={"api_key"})
+        if provider_changed:
+            # 密钥库的键名带提供商前缀，跟着换掉，旧 Key 删除。
+            old_ref = profile.secret_ref
+            fields["secret_ref"] = f"{body.provider}:profile:{profile.id}"
+            s.secrets.set_secret(fields["secret_ref"], body.api_key.strip())
+            s.secrets.delete_secret(old_ref)
+        elif body.api_key:
+            s.secrets.set_secret(profile.secret_ref, body.api_key.strip())
         # 即使只换了 API Key 也更新 updated_at，提供商实例池据此重建客户端。
         profile = await s.db.profiles.update(profile_id, **fields)
         await changed(s, "profiles")
