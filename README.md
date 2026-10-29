@@ -116,6 +116,16 @@ uv run --project agent-core --group build python packaging/package.py
 
 推送 `v*` 标签时，GitHub Actions（`.github/workflows/release.yml`）会在 Windows、macOS（Apple 芯片和 Intel）、Linux 上并行打包，并把产物放进一个草稿 Release。
 
+### 更换应用图标
+
+图标由 `assets/branding/` 里的两张主图生成，都是 1024×1024、透明背景的 PNG：`icon.png` 是完整图标，图案铺满画布；`icon_small.png` 是给 32 像素及以下用的简化版。替换主图后运行：
+
+```bash
+uv run --no-project --with pillow python packaging/make_icons.py
+```
+
+脚本会重新生成 Windows 的 `app_icon.ico`（16～256 共 9 个尺寸）、macOS 的 AppIcon（按 Apple 规范留边并加投影）、托盘图标和 AppImage 用的图标。
+
 ### 数据目录
 
 | 平台 | 位置 |

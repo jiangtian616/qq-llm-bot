@@ -124,7 +124,7 @@ def package_linux(core: Path, ver: str) -> Path:
         "Terminal=false\n",
         encoding="utf-8",
     )
-    shutil.copy2(ROOT / "assets" / "tray" / "tray_icon.png", appdir / f"{APP}.png")
+    shutil.copy2(ROOT / "assets" / "branding" / "app_icon_256.png", appdir / f"{APP}.png")
     tool = os.environ.get("APPIMAGETOOL") or shutil.which("appimagetool")
     if not tool:
         raise SystemExit("找不到 appimagetool：请安装，或用环境变量 APPIMAGETOOL 指定路径")
