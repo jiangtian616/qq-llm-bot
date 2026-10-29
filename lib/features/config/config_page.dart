@@ -328,8 +328,8 @@ class _Footer extends StatelessWidget {
       child: Row(
         children: [
           ?leading,
-          const Spacer(),
-          if (notice != null) Flexible(flex: 4, child: notice!),
+          // 提示占满中间的空间并靠右，保存按钮始终贴在右边。
+          Expanded(child: Align(alignment: Alignment.centerRight, child: notice)),
           const SizedBox(width: 16),
           FilledButton(onPressed: onSave, child: const Text('保存')),
         ],
