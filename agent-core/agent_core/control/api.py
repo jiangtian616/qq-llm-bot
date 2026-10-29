@@ -41,14 +41,12 @@ class AccountCreate(BaseModel):
     app_id: str = Field(min_length=1)
     app_secret: str = Field(min_length=1)
     display_name: str = ""
-    is_sandbox: bool = True
     auto_connect: bool = False
 
 
 class AccountUpdate(BaseModel):
     display_name: str | None = None
     app_secret: str | None = Field(default=None, min_length=1)
-    is_sandbox: bool | None = None
     enabled: bool | None = None
     auto_connect: bool | None = None
 
@@ -94,7 +92,6 @@ def build_router() -> APIRouter:
             "display_name": account.display_name,
             "transport": account.transport,
             "intents": account.intents,
-            "is_sandbox": bool(account.is_sandbox),
             "enabled": bool(account.enabled),
             "auto_connect": bool(await s.db.settings.resolve("connection.auto_connect", account_id=account.id)),
             "secret_set": bool(secret),
@@ -134,7 +131,6 @@ def build_router() -> APIRouter:
                 display_name=body.display_name.strip() or app_id,
                 transport=s.transport,
                 intents=DEFAULT_INTENTS,
-                is_sandbox=body.is_sandbox,
             )
         except IntegrityError as e:
             raise HTTPException(status.HTTP_409_CONFLICT, "这个 AppID 已经添加过了") from e
@@ -152,11 +148,9 @@ def build_router() -> APIRouter:
         fields: dict[str, Any] = {}
         if body.display_name is not None:
             fields["display_name"] = body.display_name.strip() or account.app_id
-        if body.is_sandbox is not None:
-            fields["is_sandbox"] = int(body.is_sandbox)
         if body.enabled is not None:
             fields["enabled"] = int(body.enabled)
-        if body.app_secret is not None or body.is_sandbox is not None or body.enabled is False:
+        if body.app_secret is not None or body.enabled is False:
             # 换了 AppSecret 等连接参数：断开并丢掉缓存的 token，下次启动用新的。
             await s.connections.forget(account_id)
         if body.app_secret is not None:

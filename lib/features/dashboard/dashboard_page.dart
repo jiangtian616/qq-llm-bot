@@ -202,7 +202,7 @@ class _QQConnectionCard extends GetView<DashboardController> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: _ConnectionDot(state: a.connection.state),
-                  title: Text('${a.displayName}${a.isSandbox ? '（沙箱）' : ''}'),
+                  title: Text(a.displayName),
                   subtitle: Text(_connectionText(a)),
                   trailing: controller.accountBusy.contains(a.id)
                       ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))

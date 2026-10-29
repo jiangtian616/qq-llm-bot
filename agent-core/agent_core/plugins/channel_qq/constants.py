@@ -17,7 +17,7 @@ class Intents(enum.IntFlag):
     GUILDS = 1 << 0
     GUILD_MEMBERS = 1 << 1
     GROUP_AND_C2C_EVENT = 1 << 25
-    """群聊和单聊事件，需要单独申请；审核通过前只能在沙箱里测试。"""
+    """群聊和单聊事件，需要单独申请。"""
     PUBLIC_GUILD_MESSAGES = 1 << 30
 
 
@@ -46,7 +46,7 @@ class EventType(enum.StrEnum):
 
 # WebSocket 关闭码：这些情况重连也没用。
 FATAL_CLOSE_CODES = {
-    4914,  # 机器人已下架，只允许连接沙箱环境
+    4914,  # 机器人已下架
     4915,  # 机器人已封禁
 }
 # 这些关闭码说明 session 已失效，不能 Resume，要重新 Identify。

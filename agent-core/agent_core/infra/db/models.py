@@ -44,7 +44,6 @@ class ChannelAccount(Base):
     display_name: Mapped[str] = mapped_column(Text, default="")
     transport: Mapped[str] = mapped_column(Text, default="websocket")
     intents: Mapped[int] = mapped_column(Integer, default=1 << 25)
-    is_sandbox: Mapped[int] = mapped_column(Integer, default=1)
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[int] = mapped_column(Integer)

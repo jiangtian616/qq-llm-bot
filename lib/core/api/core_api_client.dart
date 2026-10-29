@@ -44,14 +44,12 @@ class CoreApiClient {
     required String appId,
     required String appSecret,
     String displayName = '',
-    bool isSandbox = true,
     bool autoConnect = false,
   }) async =>
       AccountInfo.fromJson(await _send('POST', '/accounts', {
         'app_id': appId,
         'app_secret': appSecret,
         'display_name': displayName,
-        'is_sandbox': isSandbox,
         'auto_connect': autoConnect,
       }) as Map<String, dynamic>);
 

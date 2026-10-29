@@ -65,14 +65,12 @@ class ConfigController extends GetxController {
     required String appId,
     required String appSecret,
     required String displayName,
-    required bool isSandbox,
     required bool autoConnect,
   }) =>
       run(() => repository.addAccount(
             appId: appId,
             appSecret: appSecret,
             displayName: displayName,
-            isSandbox: isSandbox,
             autoConnect: autoConnect,
           ));
 

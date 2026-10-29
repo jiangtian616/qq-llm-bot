@@ -74,7 +74,6 @@ class ConnectionManager:
                     account_id=account.id,
                     app_id=account.app_id,
                     secrets=self._secrets,
-                    is_sandbox=bool(account.is_sandbox),
                 )
             )
             self._channels[account_id] = adapter
@@ -118,7 +117,6 @@ class ConnectionManager:
                     bus=self._bus,
                     state=conn.state,
                     intents=account.intents,
-                    is_sandbox=bool(account.is_sandbox),
                     resume=ResumeState(gateway.session_id, gateway.last_seq) if gateway else ResumeState(),
                 )
             )

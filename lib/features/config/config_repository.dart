@@ -27,14 +27,12 @@ class ConfigRepository {
     required String appId,
     required String appSecret,
     required String displayName,
-    required bool isSandbox,
     required bool autoConnect,
   }) =>
       _api.createAccount(
         appId: appId,
         appSecret: appSecret,
         displayName: displayName,
-        isSandbox: isSandbox,
         autoConnect: autoConnect,
       );
 

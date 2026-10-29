@@ -21,7 +21,6 @@ class ChannelContext:
     account_id: int
     app_id: str
     secrets: SecretReader
-    is_sandbox: bool = False
 
 
 class ChannelAdapter(abc.ABC):

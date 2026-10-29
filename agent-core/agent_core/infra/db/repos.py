@@ -49,7 +49,7 @@ class AccountRepo(_Repo):
             return await s.get(ChannelAccount, account_id)
 
     async def create(
-        self, *, platform: str, app_id: str, display_name: str, transport: str, intents: int, is_sandbox: bool
+        self, *, platform: str, app_id: str, display_name: str, transport: str, intents: int
     ) -> ChannelAccount:
         now = now_ms()
         async with self._sessions.begin() as s:
@@ -59,7 +59,6 @@ class AccountRepo(_Repo):
                 display_name=display_name,
                 transport=transport,
                 intents=intents,
-                is_sandbox=int(is_sandbox),
                 enabled=1,
                 created_at=now,
                 updated_at=now,

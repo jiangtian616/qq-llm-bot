@@ -93,8 +93,7 @@ class _AccountsCard extends GetView<ConfigController> {
               const SizedBox(height: 8),
               if (accounts.isEmpty)
                 Text(
-                  '还没有机器人。在 QQ 开放平台（q.qq.com）创建机器人，在开发设置里拿到 AppID 和 AppSecret 后添加到这里。'
-                  '群聊和单聊权限审核通过前，只能在沙箱群和沙箱用户里测试。',
+                  '还没有机器人。在 QQ 开放平台（q.qq.com）创建机器人，在开发设置里拿到 AppID 和 AppSecret 后添加到这里。',
                   style: theme.textTheme.bodyMedium,
                 ),
               for (final a in accounts)
@@ -104,7 +103,6 @@ class _AccountsCard extends GetView<ConfigController> {
                   title: Text(a.displayName),
                   subtitle: Text([
                     'AppID ${a.appId}',
-                    if (a.isSandbox) '沙箱',
                     if (!a.enabled) '已停用',
                     a.secretSet ? 'AppSecret ${a.secretHint}' : 'AppSecret 未设置',
                   ].join(' · ')),
@@ -177,7 +175,6 @@ class _AccountDialogState extends State<_AccountDialog> {
   late final _appId = TextEditingController(text: widget.account?.appId);
   late final _secret = TextEditingController();
   late final _name = TextEditingController(text: widget.account?.displayName);
-  late bool _sandbox = widget.account?.isSandbox ?? true;
   bool _autoConnect = false;
   bool _saving = false;
   String? _error;
@@ -202,14 +199,12 @@ class _AccountDialogState extends State<_AccountDialog> {
     final error = _editing
         ? await c.updateAccount(widget.account!.id, {
             'display_name': _name.text.trim(),
-            'is_sandbox': _sandbox,
             if (_secret.text.trim().isNotEmpty) 'app_secret': _secret.text.trim(),
           })
         : await c.addAccount(
             appId: _appId.text.trim(),
             appSecret: _secret.text.trim(),
             displayName: _name.text.trim(),
-            isSandbox: _sandbox,
             autoConnect: _autoConnect,
           );
     if (!mounted) return;
@@ -252,13 +247,6 @@ class _AccountDialogState extends State<_AccountDialog> {
               TextFormField(
                 controller: _name,
                 decoration: const InputDecoration(labelText: '名称（可选）', helperText: '只在本机显示'),
-              ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _sandbox,
-                onChanged: (v) => setState(() => _sandbox = v ?? true),
-                title: const Text('沙箱环境'),
-                subtitle: const Text('群聊和单聊权限审核通过前，只能在沙箱群和沙箱用户里测试'),
               ),
               if (!_editing)
                 CheckboxListTile(

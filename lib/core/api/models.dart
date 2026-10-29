@@ -62,7 +62,6 @@ class AccountInfo {
     required this.id,
     required this.appId,
     required this.displayName,
-    required this.isSandbox,
     required this.enabled,
     required this.autoConnect,
     required this.secretSet,
@@ -73,7 +72,6 @@ class AccountInfo {
   final int id;
   final String appId;
   final String displayName;
-  final bool isSandbox;
   final bool enabled;
   final bool autoConnect;
   final bool secretSet;
@@ -84,7 +82,6 @@ class AccountInfo {
         id: json['id'] as int,
         appId: json['app_id'] as String,
         displayName: json['display_name'] as String,
-        isSandbox: json['is_sandbox'] as bool,
         enabled: json['enabled'] as bool,
         autoConnect: json['auto_connect'] as bool,
         secretSet: json['secret_set'] as bool,

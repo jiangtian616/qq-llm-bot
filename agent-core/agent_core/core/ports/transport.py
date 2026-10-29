@@ -26,7 +26,6 @@ class TransportContext:
     bus: EventBus
     state: ConnectionStateMachine
     intents: int
-    is_sandbox: bool = False
     resume: ResumeState = field(default_factory=ResumeState)
 
 
