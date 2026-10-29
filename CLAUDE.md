@@ -55,7 +55,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 - 两份历史：`messages` 是所有提供商共用的中立历史；`provider_messages` 是每个提供商的原始消息，只追加、不改写（Claude 的回复原样保存整个 `response.content`，包括 thinking 块）。换了提供商时，从中立历史重建上下文。同一段里换走又换回来时，原始历史接着用，中间别的提供商答过的轮次从中立历史补在后面（`ConversationRepo.load_context` 的 `missing`，按 `turn_id` 对齐），和本轮一起追加。
 - Claude 发请求时去掉历史里的 thinking 块：图片换成文字标记、改了系统提示词以后，思考块前面的内容和生成时不一样，Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.1 发回这样的思考块会返回 400。DeepSeek 同样去掉 `reasoning_content`（不带 tools 时官方说不用回传），并把连续的同角色消息合并成一条再发。
 - 历史按 `history_epoch` 分段，旧记录保留，但不再进上下文。`/清空` 时 epoch 加 1，从零开始。
-- 历史压缩（`AgentEngine._maybe_compact`）：每轮结束后估算下一次请求的 token 数，超过 `history.compact_at_tokens` 或当前这一段超过 `history.max_turns` 轮时，把较早的部分交给提供商的 `compact()` 压成摘要，最近 `history.keep_recent_turns` 轮原文保留，开始新的一段（`ConversationRepo.start_epoch`）。Claude 用官方按需压缩（beta `compact-2026-09-04`），返回的 compaction 块放在新一段最前面原样发回，之后带着它的请求都走 beta 接口；摘要文字另存一条 `direction=summary` 的中立消息。模型不支持压缩时只保留最近几轮。压缩的费用记在触发它的那一轮上。
+- 历史压缩（`AgentEngine._maybe_compact`）：每轮结束后估算下一次请求的 token 数，超过 `history.compact_at_tokens` 或当前这一段超过 `history.max_turns` 轮时，把较早的部分交给提供商的 `compact()` 压成摘要，最近 `history.keep_recent_turns` 轮原文保留，开始新的一段（`ConversationRepo.start_epoch`）。Claude 用官方按需压缩（beta `compact-2026-09-04`），返回的 compaction 块放在新一段最前面原样发回，之后带着它的请求都走 beta 接口；摘要文字另存一条 `direction=summary` 的中立消息。保留的最近几轮在中立历史里也挪到新一段（按回复数从后往前数，不算拒答），换了提供商重建时才看得到；摘要写得比它们晚，读取时按「摘要在前」排序（`load_context` 和会话页都是）。模型不支持压缩时只保留最近几轮。压缩的费用记在触发它的那一轮上。
 - 群里推过来的消息都触发回复，推哪些（仅 @ / 全部消息）只由 QQ 客户端的群设置决定，软件里不再有对应的配置项。被限频或预算挡下、没回复的群消息会拼进下一轮的 user 消息，只带最新的 `group.context_max_messages` 条、`group.context_max_chars` 字，更早的换成一行「省略了更早的 N 条群消息」。图片只随当前这一轮发给模型，存进历史时换成「[图片1]」这样的文字标记。
 - 指令结果、限频和预算提醒这类系统回复，`turn_id` 为空，不进模型上下文。
 

@@ -251,7 +251,7 @@ class _MessageList extends GetView<SessionsController> {
       if (messages.isEmpty) return const Center(child: Text('没有消息'));
       final items = <Widget>[];
       int? epoch;
-      for (final m in messages) {
+      for (final m in _summaryFirst(messages)) {
         if (epoch != null && m.historyEpoch != epoch) {
           items.add(_EpochDivider(epoch: m.historyEpoch, summarized: m.isSummary));
         }
@@ -261,6 +261,22 @@ class _MessageList extends GetView<SessionsController> {
       // 最新的消息在最下面，默认滚到底。
       return ListView(reverse: true, padding: const EdgeInsets.all(16), children: items.reversed.toList());
     });
+  }
+
+  /// 摘要是一段的开头，但写入得比压缩时挪过来的最近几轮晚，放回这一段最前面。
+  static List<ChatMessage> _summaryFirst(List<ChatMessage> messages) {
+    final ordered = <ChatMessage>[];
+    var start = 0;
+    for (var i = 1; i <= messages.length; i++) {
+      if (i == messages.length || messages[i].historyEpoch != messages[start].historyEpoch) {
+        final run = messages.sublist(start, i);
+        ordered
+          ..addAll(run.where((m) => m.isSummary))
+          ..addAll(run.where((m) => !m.isSummary));
+        start = i;
+      }
+    }
+    return ordered;
   }
 }
 

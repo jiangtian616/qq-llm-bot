@@ -373,6 +373,7 @@ class AgentEngine:
             provider_messages=new_history,
             summary=summary,
             turn_id=ingested.turn_id,
+            keep_turns=keep,
         )
         if compacted is not None:
             await db.conversations.add_turn_cost(ingested.turn_id, compacted.cost_usd)

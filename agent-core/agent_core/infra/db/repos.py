@@ -582,9 +582,12 @@ class ConversationRepo(_Repo):
         provider_messages: Sequence[Any],
         summary: str | None,
         turn_id: int,
+        keep_turns: int,
     ) -> int | None:
         """历史压缩：开始新一段，写入新一段的原始历史（摘要块 + 保留的最近几轮）和摘要文字。
 
+        保留的最近 keep_turns 轮在中立历史里也挪到新一段，换了提供商从中立历史重建时才不会丢。
+        轮数按回复数（不算拒答，拒答不进原始历史）从后往前数，和原始历史的切分一致。
         期间会话被清空过（epoch 已经变了）就什么也不做，返回 None。
         """
         now = now_ms()
@@ -593,6 +596,34 @@ class ConversationRepo(_Repo):
             if conv is None or conv.history_epoch != from_epoch:
                 return None
             conv.history_epoch += 1
+            refused = select(Turn.id).where(Turn.conversation_id == conversation_id, Turn.status == "refused")
+            replies = (
+                await s.scalars(
+                    select(Message.id)
+                    .where(
+                        Message.conversation_id == conversation_id,
+                        Message.history_epoch == from_epoch,
+                        Message.direction == "out",
+                        Message.turn_id.is_not(None),
+                        Message.turn_id.not_in(refused),
+                    )
+                    .order_by(Message.id.desc())
+                    .limit(keep_turns + 1)
+                )
+            ).all()
+            # 第 keep_turns + 1 条回复（从后往前）及以前的留在旧一段，之后的都挪过去。
+            # 旧一段的摘要是那一段的开头，已经压进这次的摘要里了，不挪。
+            boundary = replies[keep_turns] if len(replies) > keep_turns else 0
+            await s.execute(
+                update(Message)
+                .where(
+                    Message.conversation_id == conversation_id,
+                    Message.history_epoch == from_epoch,
+                    Message.id > boundary,
+                    Message.direction != "summary",
+                )
+                .values(history_epoch=conv.history_epoch)
+            )
             for i, raw in enumerate(provider_messages):
                 s.add(
                     ProviderMessage(
@@ -608,6 +639,7 @@ class ConversationRepo(_Repo):
                 )
             if summary:
                 # 中立历史里也留一份摘要：会话页能看到，换了提供商时从它重建上下文。
+                # 它的 id 比挪过来的最近几轮大，读的时候按「摘要在前」排序。
                 s.add(
                     Message(
                         conversation_id=conversation_id,
@@ -654,7 +686,8 @@ class ConversationRepo(_Repo):
                         Message.history_epoch == history_epoch,
                         Message.id < current_message_id,
                     )
-                    .order_by(Message.id)
+                    # 摘要是这一段的开头，但写入得比压缩时挪过来的最近几轮晚。
+                    .order_by(case((Message.direction == "summary", 0), else_=1), Message.id)
                 )
             ).all()
 
