@@ -22,6 +22,8 @@ class QueueRepository {
   Future<List<InboxItem>> inbox(String? status) => _api.listInbox(status: status);
   Future<List<OutboxItem>> outbox(String? status) => _api.listOutbox(status: status);
   Future<({Map<String, int> inbox, Map<String, int> outbox})> stats() => _api.stats();
+  Future<QueueDetail> inboxDetail(int id) => _api.inboxDetail(id);
+  Future<QueueDetail> outboxDetail(int id) => _api.outboxDetail(id);
   Future<void> retryInbox(int id) => _api.retryInbox(id);
   Future<void> retryOutbox(int id) => _api.retryOutbox(id);
   Future<void> cancelOutbox(int id) => _api.cancelOutbox(id);

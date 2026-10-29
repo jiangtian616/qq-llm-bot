@@ -120,6 +120,12 @@ class CoreApiClient {
           OutboxItem.fromJson(o as Map<String, dynamic>),
       ];
 
+  Future<QueueDetail> inboxDetail(int id) async =>
+      QueueDetail.fromInboxJson(await _get('/queue/inbox/$id') as Map<String, dynamic>);
+
+  Future<QueueDetail> outboxDetail(int id) async =>
+      QueueDetail.fromOutboxJson(await _get('/queue/outbox/$id') as Map<String, dynamic>);
+
   Future<void> retryInbox(int id) => _send('POST', '/queue/inbox/$id/retry');
 
   Future<void> retryOutbox(int id) => _send('POST', '/queue/outbox/$id/retry');

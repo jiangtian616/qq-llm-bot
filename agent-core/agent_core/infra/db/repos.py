@@ -293,6 +293,10 @@ class InboxRepo(_Repo):
         async with self._sessions.begin() as s:
             await s.execute(update(InboxEvent).where(InboxEvent.id == inbox_id).values(**values))
 
+    async def get(self, inbox_id: int) -> InboxEvent | None:
+        async with self._sessions() as s:
+            return await s.get(InboxEvent, inbox_id)
+
     async def list(self, *, status: str | None, limit: int) -> list[InboxEvent]:
         stmt = select(InboxEvent).order_by(InboxEvent.id.desc()).limit(limit)
         if status:
@@ -903,6 +907,16 @@ class OutboxRepo(_Repo):
                 row.locked_until = now + lease_ms
                 row.attempts += 1
         return [(o, c) for o, c in rows]
+
+    async def get(self, outbox_id: int) -> tuple[Outbox, Conversation] | None:
+        stmt = (
+            select(Outbox, Conversation)
+            .join(Conversation, Outbox.conversation_id == Conversation.id)
+            .where(Outbox.id == outbox_id)
+        )
+        async with self._sessions() as s:
+            row = (await s.execute(stmt)).first()
+        return None if row is None else (row[0], row[1])
 
     async def list(self, *, status: str | None, limit: int) -> list[tuple[Outbox, Conversation]]:
         stmt = (

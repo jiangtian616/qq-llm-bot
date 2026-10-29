@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../core/ui/detail_dialog.dart';
 import '../../core/ui/format.dart';
 import '../../core/ui/placeholder_view.dart';
 import 'logs_controller.dart';
@@ -108,13 +109,28 @@ class _EventsTab extends GetView<LogsController> {
                                 _ => theme.colorScheme.outline,
                               },
                             ),
-                            title: SelectableText(e.message),
+                            // 长的只显示开头，点开看完整内容。
+                            title: Text(e.message, maxLines: 2, overflow: TextOverflow.ellipsis),
                             subtitle: Text([
                               formatTime(e.ts),
                               _categories[e.category] ?? e.category,
                               if (e.accountId != null) '账号 ${e.accountId}',
                               if (e.data != null) e.data.toString(),
-                            ].join(' · ')),
+                            ].join(' · '), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            onTap: () => showDetailDialog(
+                              context,
+                              title: '运行事件 #${e.id}',
+                              sections: [
+                                DetailSection('内容', e.message),
+                                DetailSection.fields('概要', {
+                                  '时间': formatTime(e.ts),
+                                  '级别': _levels[e.level] ?? e.level,
+                                  '分类': _categories[e.category] ?? e.category,
+                                  if (e.accountId != null) '账号': e.accountId,
+                                }),
+                                DetailSection.json('附加数据', e.data),
+                              ],
+                            ),
                           ),
                       ],
                     ),

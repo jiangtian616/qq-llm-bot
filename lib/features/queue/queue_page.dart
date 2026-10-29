@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../core/api/models.dart';
+import '../../core/ui/detail_dialog.dart';
 import '../../core/ui/format.dart';
 import '../../core/ui/placeholder_view.dart';
 import 'queue_controller.dart';
@@ -139,6 +140,7 @@ class _InboxTab extends GetView<QueueController> {
                             trailing: e.status == 'failed'
                                 ? TextButton(onPressed: () async => _report(await controller.retryInbox(e.id)), child: const Text('重试'))
                                 : null,
+                            onTap: () => _showDetail(context, e),
                           ),
                       ],
                     ),
@@ -146,6 +148,29 @@ class _InboxTab extends GetView<QueueController> {
           ],
         ));
   }
+
+  void _showDetail(BuildContext context, InboxItem e) => showDetailDialog(
+        context,
+        title: '收件箱事件 #${e.id}',
+        sections: [
+          DetailSection.fields('概要', {
+            '类型': _eventTypes[e.eventType] ?? e.eventType,
+            '状态': _inboxStatuses[e.status] ?? e.status,
+            '收到': formatTime(e.receivedAt),
+            if (e.replyDeadline != null) '回复截止': formatTime(e.replyDeadline),
+            '处理次数': e.attempts,
+          }),
+          if (e.lastError != null) DetailSection('错误', e.lastError!),
+        ],
+        load: () async {
+          final d = await controller.repository.inboxDetail(e.id);
+          return [
+            DetailSection('消息内容', d.content),
+            DetailSection.fields('其它字段', d.extra),
+            DetailSection.json('原始事件', d.raw),
+          ];
+        },
+      );
 }
 
 class _OutboxTab extends GetView<QueueController> {
@@ -178,6 +203,7 @@ class _OutboxTab extends GetView<QueueController> {
                                 ),
                               _ => null,
                             },
+                            onTap: () => _showDetail(context, o),
                           ),
                       ],
                     ),
@@ -185,6 +211,33 @@ class _OutboxTab extends GetView<QueueController> {
           ],
         ));
   }
+
+  void _showDetail(BuildContext context, OutboxItem o) => showDetailDialog(
+        context,
+        title: '发件箱回复 #${o.id}',
+        sections: [
+          DetailSection.fields('概要', {
+            '会话': o.conversationLabel,
+            '状态': _outboxStatuses[o.status] ?? o.status,
+            if (o.chunkCount > 1) '分段': '第 ${o.chunkIndex + 1}/${o.chunkCount} 段',
+            'msg_seq': o.msgSeq,
+            '生成于': formatTime(o.createdAt),
+            if (o.sentAt != null) '发送于': formatTime(o.sentAt),
+            if (o.deadline != null) '截止': formatTime(o.deadline),
+            '尝试次数': o.attempts,
+            if (o.nextAttemptAt != null) '下次重试': formatTime(o.nextAttemptAt),
+          }),
+          if (o.lastError != null) DetailSection('错误', '${o.lastErrorCode != null ? '[${o.lastErrorCode}] ' : ''}${o.lastError}'),
+        ],
+        load: () async {
+          final d = await controller.repository.outboxDetail(o.id);
+          return [
+            DetailSection('回复内容', d.content),
+            DetailSection.fields('平台信息', d.extra),
+            DetailSection.json('消息体', d.raw),
+          ];
+        },
+      );
 
   static String _outboxMeta(OutboxItem o) => [
         o.conversationLabel,

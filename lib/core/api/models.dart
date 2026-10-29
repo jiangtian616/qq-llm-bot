@@ -435,6 +435,45 @@ class OutboxItem {
       );
 }
 
+/// 收件箱或发件箱一条的完整内容，点开详情时才拉。
+class QueueDetail {
+  const QueueDetail({required this.content, this.raw, this.extra = const {}});
+
+  /// 完整的消息文字（列表里的 preview 是截断的）。
+  final String content;
+
+  /// 收件箱是平台推来的原始事件，发件箱是要发出的消息体；一般是解析好的 JSON。
+  final Object? raw;
+
+  /// 列表里没有的字段，如平台返回的消息 ID。
+  final Map<String, String> extra;
+
+  factory QueueDetail.fromInboxJson(Map<String, dynamic> json) => QueueDetail(
+        content: json['content'] as String,
+        raw: json['raw'],
+        extra: _nonNull({'event_id': json['event_id'], 'conversation_id': json['conversation_id']}),
+      );
+
+  factory QueueDetail.fromOutboxJson(Map<String, dynamic> json) => QueueDetail(
+        content: json['content'] as String,
+        raw: json['payload'],
+        extra: _nonNull({
+          'turn_id': json['turn_id'],
+          'msg_type': json['msg_type'],
+          'reply_to_msg_id': json['reply_to_msg_id'],
+          'reply_to_event_id': json['reply_to_event_id'],
+          'platform_message_id': json['platform_message_id'],
+          'platform_ts': json['platform_ts'],
+          'ref_idx': json['ref_idx'],
+        }),
+      );
+
+  static Map<String, String> _nonNull(Map<String, Object?> fields) => {
+        for (final e in fields.entries)
+          if (e.value != null) e.key: e.value.toString(),
+      };
+}
+
 class SystemEventItem {
   const SystemEventItem({
     required this.id,

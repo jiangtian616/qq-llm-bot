@@ -161,23 +161,15 @@ def build_views_router() -> APIRouter:
     async def queue_inbox(request: Request, limit: int = 100) -> list[dict[str, Any]]:
         s = _ctl(request)
         rows = await s.db.inbox.list(status=request.query_params.get("status"), limit=min(max(limit, 1), 500))
-        return [
-            {
-                "id": e.id,
-                "account_id": e.account_id,
-                "event_id": e.event_id,
-                "event_type": e.event_type,
-                "status": e.status,
-                "received_at": e.received_at,
-                "reply_deadline": e.reply_deadline,
-                "processed_at": e.processed_at,
-                "attempts": e.attempts,
-                "last_error": e.last_error,
-                "conversation_id": e.conversation_id,
-                "preview": _preview(_content_of(e.raw_json)),
-            }
-            for e in rows
-        ]
+        return [_inbox_view(e) for e in rows]
+
+    @r.get("/queue/inbox/{inbox_id}")
+    async def inbox_detail(inbox_id: int, request: Request) -> dict[str, Any]:
+        """列表里只有截断的预览；点开详情时再取完整内容和平台推来的原始事件。"""
+        e = await _ctl(request).db.inbox.get(inbox_id)
+        if e is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "事件不存在")
+        return {**_inbox_view(e), "content": _content_of(e.raw_json), "raw": _json_or_text(e.raw_json)}
 
     @r.post("/queue/inbox/{inbox_id}/retry")
     async def retry_inbox(inbox_id: int, request: Request) -> dict[str, Any]:
@@ -194,28 +186,26 @@ def build_views_router() -> APIRouter:
     async def queue_outbox(request: Request, limit: int = 100) -> list[dict[str, Any]]:
         s = _ctl(request)
         rows = await s.db.outbox.list(status=request.query_params.get("status"), limit=min(max(limit, 1), 500))
-        return [
-            {
-                "id": o.id,
-                "account_id": o.account_id,
-                "conversation_id": o.conversation_id,
-                "conversation_label": _conversation_label(c),
-                "reply_to_msg_id": o.reply_to_msg_id,
-                "msg_seq": o.msg_seq,
-                "chunk_index": o.chunk_index,
-                "chunk_count": o.chunk_count,
-                "status": o.status,
-                "deadline": o.deadline,
-                "attempts": o.attempts,
-                "next_attempt_at": o.next_attempt_at,
-                "last_error_code": o.last_error_code,
-                "last_error": o.last_error,
-                "sent_at": o.sent_at,
-                "created_at": o.created_at,
-                "preview": _preview(json.loads(o.payload_json).get("content")),
-            }
-            for o, c in rows
-        ]
+        return [_outbox_view(o, c) for o, c in rows]
+
+    @r.get("/queue/outbox/{outbox_id}")
+    async def outbox_detail(outbox_id: int, request: Request) -> dict[str, Any]:
+        row = await _ctl(request).db.outbox.get(outbox_id)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "回复不存在")
+        o, c = row
+        payload = _json_or_text(o.payload_json)
+        return {
+            **_outbox_view(o, c),
+            "content": str(payload.get("content") or "") if isinstance(payload, dict) else "",
+            "payload": payload,
+            "turn_id": o.turn_id,
+            "reply_to_event_id": o.reply_to_event_id,
+            "msg_type": o.msg_type,
+            "platform_message_id": o.platform_message_id,
+            "platform_ts": o.platform_ts,
+            "ref_idx": o.ref_idx,
+        }
 
     @r.post("/queue/outbox/{outbox_id}/retry")
     async def retry_outbox(outbox_id: int, request: Request) -> dict[str, Any]:
@@ -258,6 +248,55 @@ def build_views_router() -> APIRouter:
         return {"file": str(path), "lines": list(tail)}
 
     return r
+
+
+def _inbox_view(e: Any) -> dict[str, Any]:
+    return {
+        "id": e.id,
+        "account_id": e.account_id,
+        "event_id": e.event_id,
+        "event_type": e.event_type,
+        "status": e.status,
+        "received_at": e.received_at,
+        "reply_deadline": e.reply_deadline,
+        "processed_at": e.processed_at,
+        "attempts": e.attempts,
+        "last_error": e.last_error,
+        "conversation_id": e.conversation_id,
+        "preview": _preview(_content_of(e.raw_json)),
+    }
+
+
+def _outbox_view(o: Any, c: Any) -> dict[str, Any]:
+    return {
+        "id": o.id,
+        "account_id": o.account_id,
+        "conversation_id": o.conversation_id,
+        "conversation_label": _conversation_label(c),
+        "reply_to_msg_id": o.reply_to_msg_id,
+        "msg_seq": o.msg_seq,
+        "chunk_index": o.chunk_index,
+        "chunk_count": o.chunk_count,
+        "status": o.status,
+        "deadline": o.deadline,
+        "attempts": o.attempts,
+        "next_attempt_at": o.next_attempt_at,
+        "last_error_code": o.last_error_code,
+        "last_error": o.last_error,
+        "sent_at": o.sent_at,
+        "created_at": o.created_at,
+        "preview": _preview(json.loads(o.payload_json).get("content")),
+    }
+
+
+def _json_or_text(raw: str | None) -> Any:
+    """原样存的 JSON 解析出来给桌面端排版；解析不了就当文本。"""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
 
 
 def _content_of(raw_json: str | None) -> str:
