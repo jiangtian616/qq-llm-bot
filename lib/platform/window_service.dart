@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:window_manager/window_manager.dart';
@@ -8,13 +10,17 @@ class WindowService extends GetxService with WindowListener {
 
   final bool Function() trayAvailable;
 
+  /// Windows 上隐藏系统标题栏，由界面自己画（见 AppTitleBar）；macOS / Linux 先保留系统标题栏。
+  static bool get customTitleBar => Platform.isWindows;
+
   Future<WindowService> init({required bool startHidden}) async {
     await windowManager.ensureInitialized();
-    const options = WindowOptions(
+    final options = WindowOptions(
       size: Size(1100, 720),
       minimumSize: Size(800, 560),
       center: true,
       title: 'qq-llm-bot',
+      titleBarStyle: customTitleBar ? TitleBarStyle.hidden : TitleBarStyle.normal,
     );
     await windowManager.waitUntilReadyToShow(options, () async {
       if (!startHidden) {
