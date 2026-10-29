@@ -17,6 +17,7 @@ from agent_core.agent.prompt import (
     HELP_TEXT,
     RATE_LIMITED_TEXT,
 )
+from agent_core.agent.media import MediaFetcher, note_history
 from agent_core.agent.providers import ProviderPool
 from agent_core.core.bus import BusEvent, EventBus
 from agent_core.core.clock import now_ms, start_of_local_day_ms
@@ -31,8 +32,17 @@ log = logging.getLogger(__name__)
 
 
 class AgentEngine:
-    def __init__(self, *, db: Database, providers: ProviderPool, bus: EventBus, on_outbox: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        *,
+        db: Database,
+        providers: ProviderPool,
+        bus: EventBus,
+        on_outbox: Callable[[], None],
+        media: MediaFetcher | None = None,
+    ) -> None:
         self._db = db
+        self._media = media or MediaFetcher()
         self._providers = providers
         self._bus = bus
         self._on_outbox = on_outbox
@@ -114,7 +124,8 @@ class AgentEngine:
             await db.inbox.finish(inbox.id, "done", conversation_id=ingested.conversation_id)
             return
         max_chunks = await setting("reply.max_chunks")
-        await self._answer(inbox, msg, channel, ingested, profile, max_chunks)
+        vision = bool(await setting("vision.enabled"))
+        await self._answer(inbox, msg, channel, ingested, profile, max_chunks, vision)
 
     async def _profile(self, profile_id: Any) -> Any:
         if profile_id:
@@ -206,6 +217,7 @@ class AgentEngine:
         ingested: Ingested,
         profile: Any,
         max_chunks: Any,
+        vision: bool,
     ) -> None:
         db = self._db
         turn_id = ingested.turn_id
@@ -225,11 +237,17 @@ class AgentEngine:
             else:
                 # 这个提供商在当前 epoch 还没有原始历史（新会话、清空过、或刚换了提供商）：从中立历史重建，
                 # 并把重建出来的前缀一起存下来，之后同一 epoch 里只追加。
-                history = provider.build_context(ctx.neutral_before)
+                # 历史里的图片只留文字标记，不重新下载。
+                history = provider.build_context([note_history(m) for m in ctx.neutral_before])
                 prefix = list(history)
-            lines = [*ctx.pending, NeutralMessage("user", msg.content or "（空消息）", speaker=ingested.sender_label or None)]
-            text = "\n".join(f"[{m.speaker}] {m.content}" if m.speaker else m.content for m in lines)
-            user_message = provider.build_context([NeutralMessage("user", text)])[0]
+            current = NeutralMessage("user", msg.content, speaker=ingested.sender_label or None, attachments=msg.attachments)
+            lines = [*ctx.pending, current]
+            media = await self._media.collect(lines, vision=vision and provider.capabilities().vision)
+            texts = [(t or "（空消息）") if m is current else t for m, t in zip(lines, media.texts, strict=True)]
+            text = "\n".join(f"[{m.speaker}] {t}" if m.speaker else t for m, t in zip(lines, texts, strict=True))
+            user_message = provider.build_context([NeutralMessage("user", text, images=media.images)])[0]
+            # 存进历史的版本不带图片数据，只有文字里的「[图片1]」标记。
+            stored_user = provider.build_context([NeutralMessage("user", text)])[0] if media.images else user_message
 
             started = time.monotonic()
             result = await provider.generate([*history, user_message])
@@ -247,7 +265,7 @@ class AgentEngine:
         limit = min(int(max_chunks or window.max_replies), window.max_replies)
         chunks = [OutboxChunk(c) for c in split_reply(result.text or EMPTY_REPLY_TEXT, limit)]
         # 拒答时没有正常内容，这一轮不进提供商历史（空的 assistant 消息会让下一次请求报错）。
-        provider_messages = [] if result.refused else [*prefix, user_message, result.raw_assistant]
+        provider_messages = [] if result.refused else [*prefix, stored_user, result.raw_assistant]
         await db.conversations.save_turn_result(
             inbox_id=inbox.id,
             account_id=msg.account_id,

@@ -10,6 +10,8 @@ DEFAULTS: dict[str, Any] = {
     # 没触发回复的群消息是否存为上下文
     "group.keep_untriggered": True,
     "c2c.enabled": True,
+    # 把用户发的图片交给模型看（每张图大约多花 1000~1600 个输入 token）；关掉时模型只看到「[图片]」
+    "vision.enabled": True,
     "command.prefix": "/",
     # 用哪个模型配置；为空时用第一个
     "provider_profile_id": None,

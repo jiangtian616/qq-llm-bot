@@ -28,6 +28,7 @@ const _specs = <String, _Spec>{
   }),
   'group.keep_untriggered': _Spec('没触发回复的群消息也作为上下文', _Kind.toggle),
   'c2c.enabled': _Spec('回复单聊消息', _Kind.toggle),
+  'vision.enabled': _Spec('让模型看图片', _Kind.toggle, helper: '每张图大约多花 1000~1600 个输入 token'),
   'provider_profile_id': _Spec('模型配置', _Kind.profile, nullLabel: '第一个模型配置'),
   'history.max_turns': _Spec('历史超过多少轮自动开始新一段', _Kind.integer, helper: '0 表示不自动分段'),
   'reply.max_chunks': _Spec('一条回复最多拆几段', _Kind.integer, min: 1, nullLabel: '平台上限（群 5、单聊 4）'),
@@ -47,6 +48,7 @@ const accountSettingKeys = [
   'group.trigger',
   'group.keep_untriggered',
   'c2c.enabled',
+  'vision.enabled',
   'provider_profile_id',
   'history.max_turns',
   'reply.max_chunks',
@@ -60,6 +62,7 @@ const accountSettingKeys = [
 /// 会话可以单独设置的配置项；群和单聊各自只显示用得上的。
 List<String> conversationSettingKeys({required bool isGroup}) => [
       if (isGroup) ...['group.trigger', 'group.keep_untriggered'] else 'c2c.enabled',
+      'vision.enabled',
       'provider_profile_id',
       'history.max_turns',
       'reply.max_chunks',

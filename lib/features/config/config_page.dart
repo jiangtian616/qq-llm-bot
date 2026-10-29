@@ -472,6 +472,13 @@ class _BehaviorCard extends GetView<ConfigController> {
                 value: (s['c2c.enabled'] as bool?) ?? true,
                 onChanged: (v) => _report(controller.setSetting('c2c.enabled', v)),
               ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('让模型看图片'),
+                subtitle: const Text('用户发的图片交给模型（每轮最多 4 张，每张大约多花 1000~1600 个输入 token）；关掉时模型只知道这里有张图'),
+                value: (s['vision.enabled'] as bool?) ?? true,
+                onChanged: (v) => _report(controller.setSetting('vision.enabled', v)),
+              ),
             ],
           );
         }),

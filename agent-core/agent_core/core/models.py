@@ -108,6 +108,14 @@ class Session:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageData:
+    """下载好的图片。只随当前这一轮发给模型，存进历史时只留文字标记。"""
+
+    media_type: str  # image/jpeg、image/png、image/gif、image/webp
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class NeutralMessage:
     """中立历史里的一条消息，所有提供商共用。"""
 
@@ -115,6 +123,8 @@ class NeutralMessage:
     content: str
     speaker: str | None = None
     attachments: tuple[Attachment, ...] = ()
+    images: tuple[ImageData, ...] = ()
+    """要让模型看到的图片（提供商声明支持 vision 时才会有），放在文字前面。"""
 
 
 @dataclass(frozen=True, slots=True)

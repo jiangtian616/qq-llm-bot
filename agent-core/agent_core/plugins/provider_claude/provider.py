@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
 from typing import Any
 
@@ -81,10 +82,28 @@ class ClaudeProvider(LLMProvider):
     def build_context(self, history: Sequence[NeutralMessage]) -> list[dict[str, Any]]:
         # 群聊多人共用一份历史，user 消息前加上发言人标识，模型才分得清谁在说话。
         # 连续的同角色消息 API 会自动合并成一轮，不用手动拼接。
+        # 图片放在文字前面（Claude 建议的顺序），每张前面加一个和文字里「[图片1]」对应的编号。
         messages: list[dict[str, Any]] = []
         for m in history:
             text = f"[{m.speaker}] {m.content}" if m.role == "user" and m.speaker else m.content
-            messages.append({"role": m.role, "content": text})
+            if not m.images:
+                messages.append({"role": m.role, "content": text})
+                continue
+            content: list[dict[str, Any]] = []
+            for n, image in enumerate(m.images, 1):
+                content.append({"type": "text", "text": f"[图片{n}]"})
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image.media_type,
+                            "data": base64.b64encode(image.data).decode("ascii"),
+                        },
+                    }
+                )
+            content.append({"type": "text", "text": text})
+            messages.append({"role": m.role, "content": content})
         return messages
 
     async def generate(self, messages: Sequence[Any]) -> GenerateResult:

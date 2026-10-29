@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from agent_core.core.clock import now_ms
-from agent_core.core.models import InboundMessage, NeutralMessage, RawEvent, Scene
+from agent_core.core.models import Attachment, InboundMessage, NeutralMessage, RawEvent, Scene
 from agent_core.core.settings import DEFAULTS
 from agent_core.infra.db.models import (
     ChannelAccount,
@@ -350,9 +350,9 @@ class TurnContext:
     """该提供商在当前 epoch 的原始历史（只追加）；为空表示要从中立历史重建。"""
     next_seq: int
     neutral_before: list[NeutralMessage]
-    """当前 epoch 里这条消息之前的中立历史，重建上下文时用。"""
+    """当前 epoch 里到上一轮为止的中立历史，重建上下文时用。"""
     pending: list[NeutralMessage]
-    """上一轮之后没触发回复的群消息，拼进本轮 user 消息里，模型才知道期间聊了什么。"""
+    """上一轮之后没触发回复的群消息，拼进本轮 user 消息里，模型才知道期间聊了什么（比如先发图再 @ 机器人）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,16 +624,15 @@ class ConversationRepo(_Repo):
                 last_answered = len(neutral) - 1
             else:
                 label = speaker_label(conv.scene, contact.openid if contact else "", contact.display_name if contact else None)
-                neutral.append(NeutralMessage("user", m.content, speaker=label or None))
+                attachments = tuple(Attachment(**a) for a in json.loads(m.attachments_json or "[]"))
+                neutral.append(NeutralMessage("user", m.content, speaker=label or None, attachments=attachments))
                 if m.triggered:
                     last_answered = len(neutral) - 1
-        provider_history = [json.loads(r.raw_json) for r in raw_rows]
-        pending = neutral[last_answered + 1 :] if provider_history else []
         return TurnContext(
-            provider_history=provider_history,
+            provider_history=[json.loads(r.raw_json) for r in raw_rows],
             next_seq=(raw_rows[-1].seq_no + 1) if raw_rows else 1,
-            neutral_before=neutral,
-            pending=pending,
+            neutral_before=neutral[: last_answered + 1],
+            pending=neutral[last_answered + 1 :],
         )
 
     async def mark_turn(self, turn_id: int, **fields: Any) -> None:
