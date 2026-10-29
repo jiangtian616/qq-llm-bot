@@ -14,7 +14,7 @@
 - **看图**：用户发的图片在本机下载后交给模型（每轮最多 4 张，可按全局 / 账号 / 会话关闭）。
 - **两个独立进程**：Flutter 桌面端 + Python 核心服务。核心服务由桌面端拉起、随桌面端退出；关闭窗口默认缩到托盘，后台继续收发（可在设置里改成直接退出）。核心服务也能单独运行。
 - **不丢消息、不重复回复**：消息先写入 SQLite 再处理（收件箱 + 发件箱），按事件 ID 和 `msg_id + msg_seq` 去重；断线后用 Resume 补收，崩溃重启后接着处理。
-- **可插拔**：渠道接入方式（当前 WebSocket，预留 Webhook）和模型提供商（当前 Claude）都是插件，换实现只需改配置。
+- **可插拔**：渠道接入方式（当前 WebSocket，预留 Webhook）和模型提供商（当前 Claude 和 DeepSeek，可在模型配置里切换）都是插件，换实现只需改配置。
 - **多个机器人账号**，机器人行为按「全局 / 账号 / 会话」三层配置。
 - **密钥安全**：AppSecret 和 API Key 存系统密钥库（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），没有密钥库时退回权限 0600 的文件；不写进数据库、日志和导出文件。
 - **控制费用**：默认用 Claude Haiku 5.5（effort 设为 low）；按用户限频；每日预算用完后暂停回复，仪表盘显示当天用量。
@@ -179,6 +179,7 @@ cd agent-core && uv run alembic revision --autogenerate -m "说明"
 | `QQ_LLM_BOT_CORE` | 桌面端拉起的核心服务可执行文件 |
 | `QQ_LLM_BOT_QQ_API_BASE` | QQ OpenAPI 地址，指向本地模拟服务做联调 |
 | `ANTHROPIC_BASE_URL` | Claude API 地址（官方 SDK 自带） |
+| `DEEPSEEK_BASE_URL` | DeepSeek API 地址，默认 `https://api.deepseek.com` |
 | `QQ_LLM_BOT_SECRETS=file` | 不用系统密钥库，密钥存数据目录里权限 0600 的文件 |
 
 桌面端拉起核心服务时，这些变量会传给核心服务。

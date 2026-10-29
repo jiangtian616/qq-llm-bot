@@ -137,6 +137,7 @@ class ModelSpec {
     required this.inputPrice,
     required this.outputPrice,
     required this.legacy,
+    required this.vision,
   });
 
   final String id;
@@ -154,6 +155,9 @@ class ModelSpec {
   /// 上一代模型。
   final bool legacy;
 
+  /// 能看图片；不能时只把「[图片]」文字标记交给模型。
+  final bool vision;
+
   factory ModelSpec.fromJson(Map<String, dynamic> json) => ModelSpec(
         id: json['id'] as String,
         label: json['label'] as String,
@@ -163,6 +167,7 @@ class ModelSpec {
         inputPrice: (json['input_price'] as num).toDouble(),
         outputPrice: (json['output_price'] as num).toDouble(),
         legacy: json['legacy'] as bool,
+        vision: json['vision'] as bool? ?? true,
       );
 }
 

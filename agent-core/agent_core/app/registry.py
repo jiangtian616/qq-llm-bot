@@ -24,7 +24,10 @@ BUILTIN_PLUGINS: dict[str, dict[str, str]] = {
         "qq.websocket": "agent_core.plugins.channel_qq.transport_ws:WebSocketTransport",
         "qq.webhook": "agent_core.plugins.channel_qq.transport_webhook:WebhookTransport",
     },
-    "qq_llm_bot.providers": {"claude": "agent_core.plugins.provider_claude.provider:ClaudeProvider"},
+    "qq_llm_bot.providers": {
+        "claude": "agent_core.plugins.provider_claude.provider:ClaudeProvider",
+        "deepseek": "agent_core.plugins.provider_deepseek.provider:DeepSeekProvider",
+    },
 }
 
 

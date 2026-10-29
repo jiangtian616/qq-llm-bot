@@ -7,6 +7,7 @@ import '../../core/ui/scoped_settings_dialog.dart';
 import 'config_controller.dart';
 
 const _effortLabels = {
+  'none': '不思考（最快最省）',
   'low': '低（更快更省）',
   'medium': '中',
   'high': '高',
@@ -765,7 +766,8 @@ class _ProfileSectionState extends State<_ProfileSection> {
                   labelText: '模型',
                   helperText: model == null
                       ? '当前是 $_model，目录里没有这个模型，请重新选择'
-                      : '每百万 token：输入 \$${model.inputPrice} / 输出 \$${model.outputPrice}',
+                      : '每百万 token：输入 \$${model.inputPrice} / 输出 \$${model.outputPrice}'
+                          '${model.vision ? '' : '；不能看图，图片只以「[图片]」告诉模型'}',
                 ),
                 items: [
                   for (final m in spec.models)

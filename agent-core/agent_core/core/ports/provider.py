@@ -41,6 +41,8 @@ class ModelSpec:
     """美元 / 百万 token，桌面端只用来展示。"""
     legacy: bool = False
     """上一代模型：仍然可用，界面上排在后面。"""
+    vision: bool = True
+    """能看图片；不能时引擎只把「[图片]」这样的文字标记交给模型。"""
 
 
 @dataclass(frozen=True, slots=True)

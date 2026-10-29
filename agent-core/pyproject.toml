@@ -34,6 +34,7 @@ qq = "agent_core.plugins.channel_qq.adapter:QQAdapter"
 
 [project.entry-points."qq_llm_bot.providers"]
 claude = "agent_core.plugins.provider_claude.provider:ClaudeProvider"
+deepseek = "agent_core.plugins.provider_deepseek.provider:DeepSeekProvider"
 
 [build-system]
 requires = ["hatchling"]

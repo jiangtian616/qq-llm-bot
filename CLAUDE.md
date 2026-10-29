@@ -27,6 +27,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 
 - `QQ_LLM_BOT_QQ_API_BASE`：QQ OpenAPI 和 access_token 接口的地址（`plugins/channel_qq/constants.py`）
 - `ANTHROPIC_BASE_URL`：Claude 接口地址（anthropic SDK 自己读取）
+- `DEEPSEEK_BASE_URL`：DeepSeek 接口地址（`plugins/provider_deepseek/provider.py`）
 - `QQ_LLM_BOT_SECRETS=file`：密钥存文件，不写进系统密钥库
 - `QQ_LLM_BOT_DATA_DIR`：数据目录（桌面端和核心服务都认）；`QQ_LLM_BOT_CORE`：桌面端要拉起的核心服务可执行文件
 
@@ -43,7 +44,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 ### 核心服务的分层
 
 - `core/`：统一的消息模型、端口接口（`core/ports/`：渠道、传输、模型提供商、工具等）、事件总线，以及所有配置项和默认值（`core/settings.py` 的 `DEFAULTS`）。不依赖其它层。
-- `plugins/`：`channel_qq`（QQ 接入，WebSocket 传输；Webhook 只是空壳）和 `provider_claude`。提供商插件要实现 `describe()`，返回模型目录（各模型支持的 effort、默认 effort、输出上限、价格），控制接口 `GET /providers` 原样给桌面端画模型配置界面，保存模型配置时也按它校验；Claude 的目录在 `plugins/provider_claude/catalog.py`，以官方文档为准。插件通过 `pyproject.toml` 的 entry points 注册；Nuitka 打包后读不到这些元数据，所以 `app/registry.py` 的 `BUILTIN_PLUGINS` 里还要再登记一份。新增插件两处都要加。
+- `plugins/`：`channel_qq`（QQ 接入，WebSocket 传输；Webhook 只是空壳）、`provider_claude` 和 `provider_deepseek`（Chat Completions 接口，直接用 aiohttp）。提供商插件要实现 `describe()`，返回模型目录（各模型支持的 effort、默认 effort、输出上限、价格、能不能看图），控制接口 `GET /providers` 原样给桌面端画模型配置界面，保存模型配置时也按它校验；Claude 的目录在 `plugins/provider_claude/catalog.py`，以官方文档为准。插件通过 `pyproject.toml` 的 entry points 注册；Nuitka 打包后读不到这些元数据，所以 `app/registry.py` 的 `BUILTIN_PLUGINS` 里还要再登记一份。新增插件两处都要加。
 - `pipeline/`：消息流水线。`ConnectionManager` 在同一个事务里写入 `inbox_events` 并更新网关的 `last_seq`（按事件 ID 去重）→ `Dispatcher` 加租约领取，同一会话串行处理 → `AgentEngine` 生成回复 → 回复和要发的消息在同一个事务里写进 `outbox` → `OutboxWorker` 发送，按 `msg_seq` 去重，按错误码分类重试。启动时释放遗留的租约，崩溃重启后接着处理。`MaintenanceWorker` 每天清理超期数据、备份数据库。
 - `agent/engine.py`：判断是否触发回复、处理指令（`/清空`、`/帮助`）、限频和每日预算、组装上下文、调用提供商。`agent/media.py` 负责下载图片交给模型。
 - `infra/`：SQLite（WAL）的仓储类都在 `infra/db/repos.py`，迁移在 `infra/db/migrations/`；密钥存储 `infra/secrets.py`。
@@ -52,7 +53,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 ### 对话历史
 
 - 两份历史：`messages` 是所有提供商共用的中立历史；`provider_messages` 是每个提供商的原始消息，只追加、不改写（Claude 的回复原样保存整个 `response.content`，包括 thinking 块）。换了提供商时，从中立历史重建上下文。
-- Claude 发请求时去掉历史里的 thinking 块：图片换成文字标记、改了系统提示词以后，思考块前面的内容和生成时不一样，Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.1 发回这样的思考块会返回 400。
+- Claude 发请求时去掉历史里的 thinking 块：图片换成文字标记、改了系统提示词以后，思考块前面的内容和生成时不一样，Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.1 发回这样的思考块会返回 400。DeepSeek 同样去掉 `reasoning_content`（不带 tools 时官方说不用回传），并把连续的同角色消息合并成一条再发。
 - 历史按 `history_epoch` 分段，旧记录保留，但不再进上下文。`/清空` 时 epoch 加 1，从零开始。
 - 历史压缩（`AgentEngine._maybe_compact`）：每轮结束后估算下一次请求的 token 数，超过 `history.compact_at_tokens` 或当前这一段超过 `history.max_turns` 轮时，把较早的部分交给提供商的 `compact()` 压成摘要，最近 `history.keep_recent_turns` 轮原文保留，开始新的一段（`ConversationRepo.start_epoch`）。Claude 用官方按需压缩（beta `compact-2026-09-04`），返回的 compaction 块放在新一段最前面原样发回，之后带着它的请求都走 beta 接口；摘要文字另存一条 `direction=summary` 的中立消息。模型不支持压缩时只保留最近几轮。压缩的费用记在触发它的那一轮上。
 - 群里推过来的消息都触发回复，推哪些（仅 @ / 全部消息）只由 QQ 客户端的群设置决定，软件里不再有对应的配置项。被限频或预算挡下、没回复的群消息会拼进下一轮的 user 消息，只带最新的 `group.context_max_messages` 条、`group.context_max_chars` 字，更早的换成一行「省略了更早的 N 条群消息」。图片只随当前这一轮发给模型，存进历史时换成「[图片1]」这样的文字标记。
