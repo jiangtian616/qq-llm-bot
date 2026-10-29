@@ -3,6 +3,49 @@ revision = 5
 requires-python = "==3.12.*"
 
 [[package]]
+name = "agent-core"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aiosqlite" },
+    { name = "alembic" },
+    { name = "anthropic" },
+    { name = "fastapi" },
+    { name = "filelock" },
+    { name = "keyring" },
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "uvicorn" },
+    { name = "websockets" },
+]
+
+[package.dev-dependencies]
+build = [
+    { name = "nuitka" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.10" },
+    { name = "aiosqlite", specifier = ">=0.20" },
+    { name = "alembic", specifier = ">=1.13" },
+    { name = "anthropic", specifier = ">=1.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "filelock", specifier = ">=3.15" },
+    { name = "keyring", specifier = ">=25" },
+    { name = "platformdirs", specifier = ">=4.2" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
+    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "websockets", specifier = ">=13" },
+]
+
+[package.metadata.requires-dev]
+build = [{ name = "nuitka", specifier = ">=4.3.1" }]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -508,6 +551,12 @@ wheels = [
 ]
 
 [[package]]
+name = "nuitka"
+version = "4.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/0f/db5cfdebf906a6de141bfdadcd72a7417ba710ba9c9d307be185a69a7c8d/nuitka-4.3.1.tar.gz", hash = "sha256:b9c87a694acc424cfffa06abf149fddbdfa85f6daac998df67411b5f4269df0f", size = 4771037, upload-time = "2026-10-17T16:34:00.545Z" }
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.45.1"
 source = { registry = "https://pypi.org/simple" }
@@ -615,41 +664,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/85/9f/01a1a99704853cb63f253eea009390c88e7131c67e66a0a02099a8c917cb/pywin32-ctypes-0.2.3.tar.gz", hash = "sha256:d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755", size = 29471, upload-time = "2024-08-14T10:15:34.626Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl", hash = "sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8", size = 30756, upload-time = "2024-08-14T10:15:33.187Z" },
-]
-
-[[package]]
-name = "qq-llm-bot-agent-core"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "anthropic" },
-    { name = "fastapi" },
-    { name = "filelock" },
-    { name = "keyring" },
-    { name = "platformdirs" },
-    { name = "pydantic" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "uvicorn" },
-    { name = "websockets" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.10" },
-    { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "alembic", specifier = ">=1.13" },
-    { name = "anthropic", specifier = ">=1.0" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "filelock", specifier = ">=3.15" },
-    { name = "keyring", specifier = ">=25" },
-    { name = "platformdirs", specifier = ">=4.2" },
-    { name = "pydantic", specifier = ">=2.8" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
-    { name = "uvicorn", specifier = ">=0.30" },
-    { name = "websockets", specifier = ">=13" },
 ]
 
 [[package]]

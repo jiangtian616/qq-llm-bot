@@ -16,6 +16,29 @@ GROUPS: dict[str, tuple[str, type]] = {
 }
 
 
+# 随程序一起分发的插件。打包后的程序里没有分发元数据，entry_points() 查不到它们，用这张表兜底；
+# 要和 pyproject.toml 的 entry points 保持一致。第三方插件仍然通过 entry points 登记。
+BUILTIN_PLUGINS: dict[str, dict[str, str]] = {
+    "qq_llm_bot.channels": {"qq": "agent_core.plugins.channel_qq.adapter:QQAdapter"},
+    "qq_llm_bot.transports": {
+        "qq.websocket": "agent_core.plugins.channel_qq.transport_ws:WebSocketTransport",
+        "qq.webhook": "agent_core.plugins.channel_qq.transport_webhook:WebhookTransport",
+    },
+    "qq_llm_bot.providers": {"claude": "agent_core.plugins.provider_claude.provider:ClaudeProvider"},
+}
+
+
+def _discover(group: str) -> list[EntryPoint]:
+    found = list(entry_points(group=group))
+    names = {ep.name for ep in found}
+    found += [
+        EntryPoint(name=name, value=value, group=group)
+        for name, value in BUILTIN_PLUGINS.get(group, {}).items()
+        if name not in names
+    ]
+    return found
+
+
 class PluginNotFoundError(LookupError):
     pass
 
@@ -35,7 +58,7 @@ class Assembly:
 
 class PluginRegistry:
     def __init__(self, loader: Callable[[str], Iterable[EntryPoint]] | None = None) -> None:
-        self._loader = loader or (lambda group: entry_points(group=group))
+        self._loader = loader or _discover
 
     def available(self, kind: str) -> list[str]:
         group, _ = GROUPS[kind]

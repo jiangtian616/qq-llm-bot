@@ -1,0 +1,102 @@
+# 三个平台并行构建便携版；推送 v* 标签时把产物发布到 GitHub Releases（草稿，确认后手动发布）。
+# Flutter 和 Nuitka 都不能跨平台编译，每个平台在自己的系统上构建。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.44.8"
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+          - name: macos-arm64
+            os: macos-15
+          # Intel 版 macOS 的 runner 标签变动较多，首次运行若找不到 runner，请按 GitHub 当前的标签调整。
+          - name: macos-x64
+            os: macos-15-intel
+          - name: linux-x86_64
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev \
+            libayatana-appindicator3-dev libsecret-1-dev patchelf libfuse2
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+          # runner 上没有 FUSE 内核模块，appimagetool 解包后运行。
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: uv sync --project agent-core --group build
+
+      # Nuitka 首次要编译约 3500 个 C 模块（大部分来自 anthropic SDK），缓存编译结果，依赖不变时后续构建快很多。
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/Nuitka/Nuitka/Cache
+            ~/Library/Caches/Nuitka
+            ~/.cache/Nuitka
+          key: nuitka-${{ matrix.name }}-${{ hashFiles('agent-core/uv.lock') }}
+          restore-keys: nuitka-${{ matrix.name }}-
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Package
+        run: uv run --project agent-core --group build python packaging/package.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qq-llm-bot-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: dist/*

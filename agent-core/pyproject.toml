@@ -1,5 +1,5 @@
 [project]
-name = "qq-llm-bot-agent-core"
+name = "agent-core"
 version = "0.1.0"
 description = "qq-llm-bot 核心服务：QQ 官方机器人接入、对话 Agent、本机控制接口"
 readme = "README.md"
@@ -41,3 +41,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_core"]
+
+[dependency-groups]
+build = [
+    "nuitka>=4.3.1",
+]
