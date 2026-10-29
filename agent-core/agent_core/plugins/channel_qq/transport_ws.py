@@ -212,7 +212,7 @@ class WebSocketTransport(InboundTransport):
             log.info("Resume 成功")
             await self.ctx.state.transition(ConnectionState.ONLINE)
             return True
-        # TODO(收件箱)：在同一事务里写入 inbox_events 并更新 gateway_sessions.last_seq。
+        # 交给 ConnectionManager：它在同一事务里写入 inbox_events 并更新 gateway_sessions.last_seq。
         self._queue.put_nowait(
             RawEvent(
                 account_id=self.ctx.account_id,

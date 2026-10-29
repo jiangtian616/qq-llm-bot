@@ -43,7 +43,7 @@ class SettingsPage extends GetView<SettingsController> {
           child: ListTile(
             leading: const Icon(Icons.key_outlined),
             title: const Text('密钥'),
-            subtitle: const Text('替换 AppSecret 和 Claude API Key、主密码模式将在下一阶段提供。密钥只存系统密钥库，不写数据库、日志和导出文件。'),
+            subtitle: const Text('AppSecret 和 Claude API Key 在「配置」页填写和替换。密钥只存系统密钥库，不写数据库、日志和导出文件。'),
           ),
         ),
       ],
