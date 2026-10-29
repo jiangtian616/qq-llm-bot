@@ -1,6 +1,7 @@
 """调度器：从收件箱取活交给 Agent 引擎。同一会话串行，保证回复顺序和历史一致；不同会话并发，设并发上限。
 
 有新活时立即唤醒；另每 5 秒轮询一次数据库兜底，重启后也能接上。
+领取和处理完一条事件都发 queue.changed，桌面端的消息队列页据此刷新。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import contextlib
 import json
 import logging
 
+from agent_core.core.bus import BusEvent, EventBus
 from agent_core.core.clock import now_ms
 from agent_core.core.models import RawEvent
 from agent_core.pipeline.inbox import LEASE_MS
@@ -21,8 +23,9 @@ POLL_INTERVAL_S = 5.0
 
 
 class Dispatcher:
-    def __init__(self, *, db, connections, engine, concurrency: int = DEFAULT_CONCURRENCY) -> None:  # noqa: ANN001
+    def __init__(self, *, db, connections, engine, bus: EventBus, concurrency: int = DEFAULT_CONCURRENCY) -> None:  # noqa: ANN001
         self._db = db
+        self._bus = bus
         self._connections = connections
         self._engine = engine
         self._semaphore = asyncio.Semaphore(concurrency)
@@ -67,6 +70,7 @@ class Dispatcher:
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
             if rows:
+                await self._bus.publish(BusEvent("queue.changed", {"box": "inbox"}))
                 continue
             self._wakeup.clear()
             with contextlib.suppress(TimeoutError):
@@ -98,3 +102,6 @@ class Dispatcher:
             log.exception("处理收件箱事件 %s 出错", row.id)
             with contextlib.suppress(Exception):
                 await self._db.inbox.finish(row.id, "failed", error=f"{type(e).__name__}: {e}"[:2000])
+        finally:
+            # 处理一条可能同时改了收件箱和发件箱（回复入库）。
+            await self._bus.publish(BusEvent("queue.changed", {"box": "inbox"}))

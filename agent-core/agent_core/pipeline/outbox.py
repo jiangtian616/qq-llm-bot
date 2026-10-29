@@ -1,6 +1,7 @@
 """发件箱：回复和历史在同一事务里写入（AgentEngine）；这里的发送器逐段发出，按错误分类重试，沿用同一个 msg_seq。
 
 同一会话按顺序发（OutboxRepo.claim 每个会话只取最前面的一段），不同会话并发。
+领取和发完一批都发 queue.changed，桌面端的消息队列页据此刷新。
 """
 
 from __future__ import annotations
@@ -76,7 +77,9 @@ class OutboxWorker:
             try:
                 rows = await self._db.outbox.claim(self._concurrency, LEASE_MS)
                 if rows:
+                    await self._bus.publish(BusEvent("queue.changed", {"box": "outbox"}))
                     await asyncio.gather(*(self._send(row, conv) for row, conv in rows))
+                    await self._bus.publish(BusEvent("queue.changed", {"box": "outbox"}))
                     continue
             except Exception:
                 log.exception("发件箱出错")

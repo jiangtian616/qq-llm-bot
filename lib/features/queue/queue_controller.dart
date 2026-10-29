@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:get/get.dart';
 
 import '../../core/api/models.dart';
@@ -19,7 +21,11 @@ class QueueController extends GetxController {
 
   bool get coreRunning => repository.coreStatus.value == CoreStatus.running;
 
-  static const _topics = {'inbox.new', 'turn.done', 'turn.failed', 'queue.changed'};
+  static const _topics = {'inbox.new', 'queue.changed', 'maintenance.done'};
+
+  Timer? _reloadTimer;
+  bool _loading = false;
+  bool _reloadPending = false;
 
   @override
   void onInit() {
@@ -27,18 +33,33 @@ class QueueController extends GetxController {
     ever(repository.coreStatus, (status) {
       if (status == CoreStatus.running) load();
     });
-    debounce(repository.events, (_) {
-      final events = repository.events;
+    // 每来一条相关事件都记下，300 毫秒内的合并成一次刷新；不用 debounce，消息不断时它会一直等下去。
+    ever(repository.events, (events) {
       if (events.isNotEmpty && (_topics.contains(events.first.topic) || events.first.topic.startsWith('outbox.'))) {
-        load();
+        _reloadTimer ??= Timer(const Duration(milliseconds: 300), () {
+          _reloadTimer = null;
+          load();
+        });
       }
-    }, time: const Duration(milliseconds: 300));
+    });
     ever(inboxStatus, (_) => load());
     ever(outboxStatus, (_) => load());
     if (coreRunning) load();
   }
 
+  @override
+  void onClose() {
+    _reloadTimer?.cancel();
+    super.onClose();
+  }
+
+  /// 同一时间只拉一次；拉取中又要刷新的，等这次完成后再拉一次，免得旧结果盖掉新结果。
   Future<void> load() async {
+    if (_loading) {
+      _reloadPending = true;
+      return;
+    }
+    _loading = true;
     try {
       final results = await Future.wait([
         repository.inbox(inboxStatus.value),
@@ -53,6 +74,12 @@ class QueueController extends GetxController {
       error.value = null;
     } on Object catch (e) {
       error.value = e.toString();
+    } finally {
+      _loading = false;
+      if (_reloadPending) {
+        _reloadPending = false;
+        unawaited(load());
+      }
     }
   }
 

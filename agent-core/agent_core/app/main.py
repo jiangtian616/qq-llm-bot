@@ -145,7 +145,7 @@ async def _serve(
     )
     outbox = OutboxWorker(db=db, connections=connections, bus=bus)
     engine = AgentEngine(db=db, providers=providers, bus=bus, on_outbox=outbox.wake)
-    dispatcher = Dispatcher(db=db, connections=connections, engine=engine)
+    dispatcher = Dispatcher(db=db, connections=connections, engine=engine, bus=bus)
     maintenance = MaintenanceWorker(
         db=db, bus=bus, database_path=paths.database, backups_dir=paths.backups_dir
     )
