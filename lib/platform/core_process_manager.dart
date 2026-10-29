@@ -134,37 +134,38 @@ class CoreProcessManager extends GetxService {
       final venvExe = Platform.isWindows
           ? p.join(project, '.venv', 'Scripts', exeName)
           : p.join(project, '.venv', 'bin', exeName);
-      var reason = '';
       if (File(venvExe).existsSync()) {
-        final missing = _missingVenvBase(project);
-        if (missing == null) {
-          return CoreLaunchSpec(venvExe, const [], workingDirectory: project, description: venvExe);
-        }
-        // venv 指向的解释器不在了，启动器会直接退出、什么日志都没有，改用 uv run 让 uv 重建 venv。
-        reason = '；.venv 的基础解释器 $missing 不存在，请在 agent-core 下重新运行 uv sync';
+        _checkVenvBase(project);
+        return CoreLaunchSpec(venvExe, const [], workingDirectory: project, description: venvExe);
       }
       return CoreLaunchSpec('uv', ['run', '--project', project, 'agent-core'],
-          workingDirectory: project, description: 'uv run（$project$reason）');
+          workingDirectory: project, description: 'uv run（$project）');
     }
     throw CoreLaunchException('找不到核心服务 agent-core：既没有随安装包分发的版本，也不在源码目录里运行');
   }
 
-  /// 读 .venv/pyvenv.cfg 的 home，返回不存在的基础解释器路径；读不出来时不拦着，返回 null。
+  /// 检查 .venv/pyvenv.cfg 的 home 下的基础解释器还在不在；读不出来时不拦着。
   ///
+  /// 解释器不在时启动器会直接退出、什么日志都没有，只能干等超时；uv sync / uv run 只看版本号，也不会重建 venv。
   /// 常见原因：Python 被卸载或换了位置；或者 venv 是在 MSIX 打包的应用（比如 Claude 桌面版）里建的，
   /// uv 装的 Python 被重定向到了包的私有目录，包外的进程看不到。
-  static String? _missingVenvBase(String project) {
+  static void _checkVenvBase(String project) {
     final String cfg;
     try {
       cfg = File(p.join(project, '.venv', 'pyvenv.cfg')).readAsStringSync();
     } on FileSystemException {
-      return null;
+      return;
     }
-    final match = RegExp(r'^\s*home\s*=\s*(.+?)\s*$', multiLine: true).firstMatch(cfg);
-    if (match == null) return null;
-    final home = match.group(1)!;
+    String? field(String key) =>
+        RegExp('^\\s*$key\\s*=\\s*(.+?)\\s*\$', multiLine: true).firstMatch(cfg)?.group(1);
+    final home = field('home');
+    if (home == null) return;
     final python = p.join(home, Platform.isWindows ? 'python.exe' : 'python3');
-    return File(python).existsSync() ? null : python;
+    if (File(python).existsSync()) return;
+    final version = field('version_info') ?? '';
+    throw CoreLaunchException('.venv 的基础解释器 $python 不存在，核心服务起不来。'
+        '请在普通终端（不要在 Claude 桌面版这类 MSIX 应用里）到 agent-core 下运行 uv python install $version，'
+        '或者删掉 .venv 后重新运行 uv sync');
   }
 
   static String? _findSourceProject(List<String> starts) {
