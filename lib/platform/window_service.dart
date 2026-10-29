@@ -4,11 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:window_manager/window_manager.dart';
 
-/// 窗口：关闭按钮默认最小化到托盘，核心服务继续运行；没有托盘时改为最小化。
+import 'desktop_prefs.dart';
+
+/// 窗口：关闭按钮按设置缩到托盘（没有托盘时最小化），或者直接退出桌面端。
 class WindowService extends GetxService with WindowListener {
-  WindowService({required this.trayAvailable});
+  WindowService({required this.trayAvailable, required this.closeAction, required this.onQuitRequested});
 
   final bool Function() trayAvailable;
+  final CloseAction Function() closeAction;
+  final VoidCallback onQuitRequested;
 
   /// Windows 上隐藏系统标题栏，由界面自己画（见 AppTitleBar）；macOS / Linux 先保留系统标题栏。
   static bool get customTitleBar => Platform.isWindows;
@@ -41,14 +45,18 @@ class WindowService extends GetxService with WindowListener {
 
   @override
   void onWindowClose() {
-    if (trayAvailable()) {
+    if (closeAction() == CloseAction.quit) {
+      onQuitRequested();
+    } else if (trayAvailable()) {
       windowManager.hide();
     } else {
       windowManager.minimize();
     }
   }
 
-  /// 真正退出桌面端（核心服务是否一起停止由调用方决定）。
+  Future<void> hide() => windowManager.hide();
+
+  /// 真正退出桌面端。
   Future<void> quit() async {
     windowManager.removeListener(this);
     await windowManager.setPreventClose(false);

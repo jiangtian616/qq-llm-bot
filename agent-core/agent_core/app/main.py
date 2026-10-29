@@ -33,6 +33,7 @@ from agent_core.infra.db.database import Database
 from agent_core.infra.db.migrate import prune_backups, upgrade_to_head
 from agent_core.infra.fileperm import write_private_file
 from agent_core.infra.logging_setup import setup_logging
+from agent_core.infra.parent_watch import watch_parent
 from agent_core.infra.paths import DataDirError, DataPaths
 from agent_core.infra.secrets import SecretStore
 from agent_core.infra.single_instance import AlreadyRunningError, SingleInstanceLock
@@ -55,6 +56,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--data-dir", help="数据目录，默认用系统的用户数据目录")
     p.add_argument("--port", type=int, help="控制接口端口，默认随机（写在 control.json 里）")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    p.add_argument("--parent-pid", type=int, help="桌面端的进程号：它退出后核心服务跟着停止（由桌面端传入）")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__} (api {API_VERSION})")
     return p.parse_args(argv)
 
@@ -67,7 +69,8 @@ def main(argv: list[str] | None = None) -> int:
         # 日志还没地方写，只能输出到控制台。
         print(f"agent-core: {e}", file=sys.stderr)
         return EXIT_CONFIG
-    setup_logging(paths.logs_dir, getattr(logging, args.log_level))
+    # 桌面端拉起时 stderr 是管道，日志只写文件：没人读的时候（比如桌面端热重启后）管道写满会卡住进程。
+    setup_logging(paths.logs_dir, getattr(logging, args.log_level), console=args.parent_pid is None)
 
     lock = SingleInstanceLock(paths.lock_file)
     try:
@@ -93,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         secrets = SecretStore(paths.secrets_file)
         log.info("密钥存储：%s（%s）", secrets.kind, secrets.backend_name)
 
-        asyncio.run(_serve(paths, config, secrets, registry, assembly, revision))
+        asyncio.run(_serve(paths, config, secrets, registry, assembly, revision, args.parent_pid))
         return EXIT_OK
     finally:
         lock.release()
@@ -107,6 +110,7 @@ async def _serve(
     registry: PluginRegistry,
     assembly: Assembly,
     db_revision: str | None,
+    parent_pid: int | None,
 ) -> None:
     bus = EventBus()
     lifecycle = ServiceLifecycle()
@@ -197,6 +201,14 @@ async def _serve(
         server.should_exit = True
 
     watcher = asyncio.create_task(stop_on_request())
+    if parent_pid is not None:
+        loop = asyncio.get_running_loop()
+
+        def on_parent_exit() -> None:
+            log.info("桌面端（pid %s）已退出", parent_pid)
+            loop.call_soon_threadsafe(lifecycle.request_shutdown)
+
+        watch_parent(parent_pid, on_parent_exit)
     write_private_file(
         paths.control_file,
         json.dumps(

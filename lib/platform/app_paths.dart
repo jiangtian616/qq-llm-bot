@@ -36,6 +36,7 @@ class AppPaths {
   String get controlFile => p.join(dataDir, 'control.json');
   String get desktopLockFile => p.join(dataDir, 'desktop.lock');
   String get desktopPortFile => p.join(dataDir, 'desktop.port');
+  String get desktopPrefsFile => p.join(dataDir, 'desktop.json');
   String get logsDir => p.join(dataDir, 'logs');
 
   static AppPaths resolve() {

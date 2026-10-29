@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../platform/desktop_prefs.dart';
 import 'settings_controller.dart';
 
 class SettingsPage extends GetView<SettingsController> {
@@ -23,12 +24,26 @@ class SettingsPage extends GetView<SettingsController> {
                     value: controller.autostartEnabled.value,
                     onChanged: controller.setAutostart,
                   )),
-              ListTile(
-                title: const Text('关闭窗口时'),
-                subtitle: Text(controller.trayAvailable
-                    ? '最小化到托盘，核心服务继续运行'
-                    : '检测不到系统托盘，改为最小化窗口；核心服务继续运行'),
-              ),
+              Obx(() => ListTile(
+                    title: const Text('关闭窗口时'),
+                    subtitle: Text(switch (controller.closeAction.value) {
+                      CloseAction.hide when controller.trayAvailable => '缩到托盘，核心服务继续收发 QQ 消息',
+                      CloseAction.hide => '检测不到系统托盘，改为最小化窗口；核心服务继续收发 QQ 消息',
+                      CloseAction.quit => '退出桌面端，核心服务一起停止，不再收发 QQ 消息',
+                    }),
+                    trailing: SegmentedButton<CloseAction>(
+                      segments: [
+                        ButtonSegment(
+                          value: CloseAction.hide,
+                          label: Text(controller.trayAvailable ? '缩到托盘' : '最小化'),
+                        ),
+                        const ButtonSegment(value: CloseAction.quit, label: Text('退出程序')),
+                      ],
+                      selected: {controller.closeAction.value},
+                      showSelectedIcon: false,
+                      onSelectionChanged: (value) => controller.setCloseAction(value.single),
+                    ),
+                  )),
             ],
           ),
         ),

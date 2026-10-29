@@ -37,7 +37,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 ### 两个进程怎么配合
 
 - 桌面端不直接读写数据库，所有操作都走核心服务在 `127.0.0.1` 上的控制接口（`agent_core/control/`），实时事件走 `WS /events`。客户端是手写的 `lib/core/api/core_api_client.dart`，接口改了要同步改它和 `models.dart`。
-- 桌面端负责拉起和停止核心服务（`lib/platform/core_process_manager.dart`）。查找顺序：`QQ_LLM_BOT_CORE` → 打包时放在程序旁边的 `agent-core/`（macOS 在 `.app/Contents/Helpers/agent-core`）→ 源码目录里 `uv run agent-core`。
+- 桌面端负责拉起和停止核心服务（`lib/platform/core_process_manager.dart`）。核心服务是普通子进程（不用分离模式，否则 Windows 上 uv / venv 启动器拉起 python 时会弹控制台窗口），启动时带 `--parent-pid`，桌面端退出（包括被强制结束、停止调试）后它会自己平稳停止；带这个参数时日志只写文件。查找顺序：`QQ_LLM_BOT_CORE` → 打包时放在程序旁边的 `agent-core/`（macOS 在 `.app/Contents/Helpers/agent-core`）→ 源码目录里 `uv run agent-core`。
 - 数据目录的规则在两边各实现了一份，改动时要保持一致：`lib/platform/app_paths.dart` 和 `agent_core/infra/paths.py`。顺序是：环境变量或 `--data-dir` → 程序旁边的 `qq-llm-bot-data` 文件夹（便携模式）→ 系统的用户数据目录。
 
 ### 核心服务的分层
@@ -63,7 +63,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 ### 桌面端
 
 - 每个页面是 `lib/features/<名字>/` 下的一个功能模块（feature / page / controller / repository），在 `lib/app/feature_registry.dart` 里登记，顺序就是左侧菜单的顺序。repository 通过 `ConnectionStore.api` 调用控制接口。
-- Windows 上隐藏系统标题栏，由 `lib/app/app_title_bar.dart` 自绘（`WindowService.customTitleBar`）；macOS / Linux 仍用系统标题栏。关闭按钮默认缩到托盘，核心服务继续运行。
+- Windows 上隐藏系统标题栏，由 `lib/app/app_title_bar.dart` 自绘（`WindowService.customTitleBar`）；macOS / Linux 仍用系统标题栏。关闭按钮默认缩到托盘、核心服务继续运行，设置页可改成直接退出；只跟桌面端有关的偏好存在数据目录的 `desktop.json`（`lib/platform/desktop_prefs.dart`）。
 
 ## 约束
 

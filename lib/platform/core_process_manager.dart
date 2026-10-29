@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:path/path.dart' as p;
 
@@ -26,7 +28,9 @@ class CoreLaunchException implements Exception {
 
 /// 负责拉起和停止核心服务进程 agent-core。
 ///
-/// 核心服务以分离模式启动，关掉界面不影响收发；停止时先调 /shutdown 让它平稳退出，超时再结束进程。
+/// 核心服务是桌面端的子进程，跟着桌面端退出：启动时传 --parent-pid，桌面端没了（包括被强制结束）它会自己平稳停止。
+/// 不用分离模式：Windows 上分离模式的进程没有控制台，uv / venv 的启动器再拉起 python 时会弹出一个控制台窗口。
+/// 停止时先调 /shutdown 让它平稳退出，超时再结束进程。
 class CoreProcessManager extends GetxService {
   CoreProcessManager({required this.dataDir, required this.store});
 
@@ -35,6 +39,7 @@ class CoreProcessManager extends GetxService {
 
   static const startTimeout = Duration(seconds: 60);
   static const stopTimeout = Duration(seconds: 15);
+  static const _stderrTailLines = 20;
 
   bool get _isRunning => store.status.value == CoreStatus.running;
 
@@ -44,12 +49,26 @@ class CoreProcessManager extends GetxService {
     final spec = resolveLaunchSpec();
     store.setTransition(CoreStatus.starting);
     try {
-      await Process.start(
+      final process = await Process.start(
         spec.executable,
-        [...spec.arguments, '--data-dir', dataDir],
+        [...spec.arguments, '--data-dir', dataDir, '--parent-pid', '$pid'],
         workingDirectory: spec.workingDirectory,
-        mode: ProcessStartMode.detached,
+        environment: const {'PYTHONIOENCODING': 'utf-8'},
       );
+      // 核心服务的日志只写文件；stderr 里只会有启动器的报错、日志还没建好时的异常，留最后几行用来报错。
+      final stderrTail = <String>[];
+      process.stdout.drain<void>().ignore();
+      process.stderr.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).listen(
+        (line) {
+          if (kDebugMode) debugPrint('[agent-core] $line');
+          stderrTail.add(line);
+          if (stderrTail.length > _stderrTailLines) stderrTail.removeAt(0);
+        },
+        onError: (Object _) {},
+      );
+      int? exitCode;
+      process.exitCode.then((code) => exitCode = code).ignore();
+
       final deadline = DateTime.now().add(startTimeout);
       while (DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(milliseconds: 500));
@@ -58,6 +77,10 @@ class CoreProcessManager extends GetxService {
         if (store.health.value != null) {
           store.setTransition(CoreStatus.running);
           return;
+        }
+        if (exitCode case final code?) {
+          final detail = stderrTail.isEmpty ? '' : '：\n${stderrTail.join('\n')}';
+          throw CoreLaunchException('核心服务启动后就退出了（退出码 $code，${spec.description}）$detail');
         }
       }
       throw CoreLaunchException('核心服务 ${startTimeout.inSeconds} 秒内没有就绪（${spec.description}），请查看 ${p.join(dataDir, 'logs')} 里的日志');

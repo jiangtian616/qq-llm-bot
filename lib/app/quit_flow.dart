@@ -1,36 +1,24 @@
-import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
-import '../core/connection/connection_store.dart';
 import '../platform/core_process_manager.dart';
 import '../platform/single_instance.dart';
 import '../platform/window_service.dart';
 
-enum _QuitChoice { uiOnly, stopCore }
+bool _quitting = false;
 
-/// 托盘菜单「退出」：询问是否同时停止核心服务。
+/// 退出桌面端：先藏起窗口，再平稳停止核心服务，最后关掉进程。
+///
+/// 托盘菜单「退出」和设置成「退出程序」的关闭按钮都走这里。万一桌面端没走到这一步就没了（被强制结束、
+/// 停止调试），核心服务也会自己发现桌面端退出并停止（见 agent-core 的 --parent-pid）。
 Future<void> quitApp(SingleInstance instance) async {
+  if (_quitting) return;
+  _quitting = true;
   final window = Get.find<WindowService>();
-  final store = Get.find<ConnectionStore>();
-  var choice = _QuitChoice.uiOnly;
-  if (store.status.value == CoreStatus.running) {
-    await window.showAndFocus();
-    final picked = await Get.dialog<_QuitChoice>(
-      AlertDialog(
-        title: const Text('退出 qq-llm-bot'),
-        content: const Text('核心服务仍在运行。关闭界面后，它会继续收发 QQ 消息。'),
-        actions: [
-          TextButton(onPressed: () => Get.back<_QuitChoice>(), child: const Text('取消')),
-          TextButton(onPressed: () => Get.back(result: _QuitChoice.uiOnly), child: const Text('只退出界面')),
-          FilledButton(onPressed: () => Get.back(result: _QuitChoice.stopCore), child: const Text('同时停止核心服务')),
-        ],
-      ),
-    );
-    if (picked == null) return;
-    choice = picked;
-  }
-  if (choice == _QuitChoice.stopCore) {
+  await window.hide();
+  try {
     await Get.find<CoreProcessManager>().stop();
+  } on Object {
+    // 停不下来也照样退出，核心服务会跟着桌面端退出。
   }
   await instance.release();
   await window.quit();

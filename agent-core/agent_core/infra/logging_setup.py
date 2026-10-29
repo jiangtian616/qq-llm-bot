@@ -1,4 +1,4 @@
-"""日志：写文件 + 控制台，并把已知密钥替换成掩码。"""
+"""日志：写文件 + 控制台（可关），并把已知密钥替换成掩码。"""
 
 from __future__ import annotations
 
@@ -38,14 +38,14 @@ class SecretRedactor(logging.Filter):
 redactor = SecretRedactor()
 
 
-def setup_logging(logs_dir: Path, level: int = logging.INFO) -> None:
+def setup_logging(logs_dir: Path, level: int = logging.INFO, *, console: bool = True) -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     file_handler = logging.handlers.RotatingFileHandler(
         logs_dir / "agent-core.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     handlers: list[logging.Handler] = [file_handler]
-    # 桌面端以分离模式拉起时没有控制台，sys.stderr 可能是 None。
-    if sys.stderr is not None:
+    # 没有控制台时（比如用 pythonw 运行）sys.stderr 是 None。
+    if console and sys.stderr is not None:
         if hasattr(sys.stderr, "reconfigure"):
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         handlers.append(logging.StreamHandler(sys.stderr))

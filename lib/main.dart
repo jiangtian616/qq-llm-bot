@@ -10,6 +10,7 @@ import 'core/connection/connection_store.dart';
 import 'platform/app_paths.dart';
 import 'platform/autostart_service.dart';
 import 'platform/core_process_manager.dart';
+import 'platform/desktop_prefs.dart';
 import 'platform/single_instance.dart';
 import 'platform/tray_service.dart';
 import 'platform/window_service.dart';
@@ -35,6 +36,7 @@ Future<void> main(List<String> args) async {
     exit(0);
   }
 
+  final prefs = Get.put(DesktopPrefs(paths.desktopPrefsFile).load(), permanent: true);
   final store = Get.put(ConnectionStore(controlFile: paths.controlFile), permanent: true);
   final processes = Get.put(CoreProcessManager(dataDir: paths.dataDir, store: store), permanent: true);
 
@@ -51,8 +53,14 @@ Future<void> main(List<String> args) async {
 
   // 开机自启时最小化到托盘；没有托盘时照常显示窗口，免得用户找不到。
   final startHidden = args.contains(AutostartService.minimizedArg) && tray.available;
-  window = await Get.put(WindowService(trayAvailable: () => tray.available), permanent: true)
-      .init(startHidden: startHidden);
+  window = await Get.put(
+    WindowService(
+      trayAvailable: () => tray.available,
+      closeAction: () => prefs.closeAction.value,
+      onQuitRequested: () => quitApp(instance),
+    ),
+    permanent: true,
+  ).init(startHidden: startHidden);
 
   // 打开桌面端时，如果核心服务没在运行就拉起它。
   processes.start().catchError((Object e) => store.lastError.value = e.toString());
