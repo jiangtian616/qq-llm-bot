@@ -9,6 +9,9 @@ DEFAULTS: dict[str, Any] = {
     "group.trigger": "at_only",
     # 没触发回复的群消息是否存为上下文
     "group.keep_untriggered": True,
+    # 上一轮之后没触发回复的群消息拼进本轮时，最多带最新的多少条、多少字；更早的只留一行「省略了 N 条」。0 表示不限
+    "group.context_max_messages": 20,
+    "group.context_max_chars": 2000,
     "c2c.enabled": True,
     # 把用户发的图片交给模型看（每张图大约多花 1000~1600 个输入 token）；关掉时模型只看到「[图片]」
     "vision.enabled": True,
@@ -17,8 +20,11 @@ DEFAULTS: dict[str, Any] = {
     "provider_profile_id": None,
     # 一条回复最多拆几段；为空时用平台的回复次数上限（群 5、单聊 4）
     "reply.max_chunks": None,
-    # 当前历史超过这么多轮就自动开始新一段（epoch 加 1）
+    # 历史压缩：一轮结束后，下一次请求预计超过这么多 token，或当前这一段超过这么多轮，就把较早的部分压成摘要，
+    # 最近几轮原文保留，开始新一段（epoch 加 1）。模型不支持压缩时只保留最近几轮。0 表示不按这一项压缩
+    "history.compact_at_tokens": 20000,
     "history.max_turns": 20,
+    "history.keep_recent_turns": 4,
     # 每个用户每分钟最多触发几次回复；0 表示不限
     "rate_limit.per_user_per_min": 10,
     # 每日费用上限（美元），超过就暂停回复并提醒；为空表示不限。全局和账号各算各的

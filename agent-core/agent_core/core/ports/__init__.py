@@ -2,7 +2,7 @@
 
 from agent_core.core.ports.channel import ChannelAdapter, ChannelContext
 from agent_core.core.ports.middleware import Middleware, NextHandler
-from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext
+from agent_core.core.ports.provider import CompactResult, LLMProvider, ProviderCapabilities, ProviderContext
 from agent_core.core.ports.repository import Repository
 from agent_core.core.ports.secrets import SecretReader
 from agent_core.core.ports.tool import Tool
@@ -11,6 +11,7 @@ from agent_core.core.ports.transport import InboundTransport, ResumeState, Trans
 __all__ = [
     "ChannelAdapter",
     "ChannelContext",
+    "CompactResult",
     "InboundTransport",
     "LLMProvider",
     "Middleware",

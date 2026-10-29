@@ -8,11 +8,14 @@
 - 不传 thinking：这几个模型默认就是自适应思考；Haiku 4.5 这类不支持 effort 的模型也不传 effort。
 - stop_reason == "refusal" 时没有正常内容，回一句固定话术；Haiku 没有服务端自动换模型的功能。
 - system prompt 保持固定并开启 prompt caching；SDK 自带 2 次重试（429、5xx、网络错误）。
+- 历史压缩用官方的按需压缩（beta compact-2026-09-04）：服务端写摘要，返回带签名的 compaction 块，放在新一段历史最前面原样发回；
+  之后历史里带着这个块的请求都要走 beta 接口、带同一个 beta 头。
 """
 
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -20,8 +23,22 @@ from anthropic import AsyncAnthropic
 from anthropic.types import Message
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
-from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
-from agent_core.plugins.provider_claude.catalog import DEFAULT_MODEL, HAIKU_LONG_PROMPT, PRICES, SPEC
+from agent_core.core.ports.provider import (
+    CompactResult,
+    LLMProvider,
+    ProviderCapabilities,
+    ProviderContext,
+    ProviderSpec,
+)
+from agent_core.plugins.provider_claude.catalog import (
+    COMPACTION_MODELS,
+    DEFAULT_MODEL,
+    HAIKU_LONG_PROMPT,
+    PRICES,
+    SPEC,
+)
+
+log = logging.getLogger(__name__)
 
 DEFAULT_EFFORT = "low"
 DEFAULT_MAX_TOKENS = 1500
@@ -32,6 +49,25 @@ DEFAULT_REFUSAL_REPLY = "抱歉，这个问题我没法回答。"
 EMPTY_ASSISTANT_TEXT = "（没有回复）"
 
 _THINKING_BLOCKS = {"thinking", "redacted_thinking"}
+
+COMPACT_BETA = "compact-2026-09-04"
+# 摘要请求的 max_tokens 包括摘要前的思考，官方建议留几千。
+COMPACT_MAX_TOKENS = 4096
+COMPACT_INSTRUCTIONS = (
+    "把这段 QQ 聊天压缩成一份摘要，之后的对话会接着这份摘要继续。用中文写。"
+    "群聊里每条用户消息前的方括号是发言人标识，摘要里要保留谁说了什么。"
+    "保留：每个人提到的关键事实、偏好和请求；已经达成的结论和约定；还没回答完的问题。省略寒暄和重复的内容。"
+    "不要调用工具，只输出摘要正文。"
+)
+
+
+def _has_compaction(messages: Sequence[Any]) -> bool:
+    return any(
+        isinstance(m, dict)
+        and isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "compaction" for b in m["content"])
+        for m in messages
+    )
 
 
 def estimate_cost(model: str, usage: Usage) -> float:
@@ -95,7 +131,7 @@ class ClaudeProvider(LLMProvider):
         self._client = client
 
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(tools=True, vision=True)
+        return ProviderCapabilities(tools=True, vision=True, compaction=self.model in COMPACTION_MODELS)
 
     def build_context(self, history: Sequence[NeutralMessage]) -> list[dict[str, Any]]:
         # 群聊多人共用一份历史，user 消息前加上发言人标识，模型才分得清谁在说话。
@@ -135,7 +171,10 @@ class ClaudeProvider(LLMProvider):
             kwargs["output_config"] = {"effort": self.effort}
         if self.ctx.system_prompt:
             kwargs["system"] = self.ctx.system_prompt
-        response: Message = await self._client.messages.create(**kwargs)
+        if _has_compaction(messages):
+            response: Message = await self._client.beta.messages.create(**kwargs, betas=[COMPACT_BETA])
+        else:
+            response = await self._client.messages.create(**kwargs)
 
         # 原样保存完整 content，下一轮直接追加进历史，不改写。
         raw_assistant = {"role": "assistant", "content": [block.to_dict() for block in response.content]}
@@ -165,6 +204,45 @@ class ClaudeProvider(LLMProvider):
             model=response.model,
             raw_assistant=raw_assistant,
             cost_usd=cost,
+        )
+
+    async def compact(self, messages: Sequence[Any]) -> CompactResult | None:
+        if self.model not in COMPACTION_MODELS:
+            return None
+        # 和平时的请求用同一个 system；摘要请求不生成回复，只返回一个 compaction 块。
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": COMPACT_MAX_TOKENS,
+            "messages": without_thinking(messages),
+            "compaction": {"type": "summarize", "instructions": COMPACT_INSTRUCTIONS},
+            "betas": [COMPACT_BETA],
+        }
+        if self.ctx.system_prompt:
+            kwargs["system"] = self.ctx.system_prompt
+        if self.effort is not None:
+            kwargs["output_config"] = {"effort": self.effort}
+        response = await self._client.beta.messages.create(**kwargs)
+
+        # 摘要调用的用量只记在 usage.iterations 里，顶层的 input_tokens / output_tokens 是 0。
+        usage = Usage(input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_write_tokens=0)
+        for it in response.usage.iterations or []:
+            usage = Usage(
+                input_tokens=usage.input_tokens + (it.input_tokens or 0),
+                output_tokens=usage.output_tokens + (it.output_tokens or 0),
+                cache_read_tokens=usage.cache_read_tokens + (getattr(it, "cache_read_input_tokens", None) or 0),
+                cache_write_tokens=usage.cache_write_tokens + (getattr(it, "cache_creation_input_tokens", None) or 0),
+            )
+        block = next((b for b in response.content if b.type == "compaction"), None)
+        if response.stop_reason != "compaction" or block is None:
+            # max_tokens、refusal 等情况拿不到摘要，照样计费。
+            log.warning("历史压缩没有拿到摘要（stop_reason=%s）", response.stop_reason)
+            return None
+        raw = block.to_dict()
+        return CompactResult(
+            message={"role": "assistant", "content": [raw]},
+            summary=raw.get("content") or "",
+            usage=usage,
+            cost_usd=estimate_cost(self.model, usage),
         )
 
     async def aclose(self) -> None:

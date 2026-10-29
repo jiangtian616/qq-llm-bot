@@ -386,7 +386,6 @@ class ConversationRepo(_Repo):
         provider: str | None,
         model: str | None,
         profile_id: int | None,
-        max_turns: int,
     ) -> Ingested:
         """开始处理：更新或新建会话和发言人，插入入站消息；需要回复时插入问答（排队中）。重复调用是安全的。"""
         now = now_ms()
@@ -434,20 +433,6 @@ class ConversationRepo(_Repo):
             )
             duplicate = existing is not None
             if existing is None:
-                if triggered and max_turns > 0:
-                    # 当前历史超过上限就自动开始新一段；旧历史保留，但不再带入上下文。
-                    turns_in_epoch = await s.scalar(
-                        select(func.count())
-                        .select_from(Message)
-                        .where(
-                            Message.conversation_id == conv.id,
-                            Message.history_epoch == conv.history_epoch,
-                            Message.direction == "out",
-                            Message.turn_id.is_not(None),
-                        )
-                    )
-                    if (turns_in_epoch or 0) >= max_turns:
-                        conv.history_epoch += 1
                 existing = Message(
                     conversation_id=conv.id,
                     history_epoch=conv.history_epoch,
@@ -582,6 +567,60 @@ class ConversationRepo(_Repo):
             conv.history_epoch += 1
             return conv.history_epoch
 
+    async def start_epoch(
+        self,
+        *,
+        conversation_id: int,
+        from_epoch: int,
+        provider: str,
+        provider_messages: Sequence[Any],
+        summary: str | None,
+        turn_id: int,
+    ) -> int | None:
+        """历史压缩：开始新一段，写入新一段的原始历史（摘要块 + 保留的最近几轮）和摘要文字。
+
+        期间会话被清空过（epoch 已经变了）就什么也不做，返回 None。
+        """
+        now = now_ms()
+        async with self._sessions.begin() as s:
+            conv = await s.get(Conversation, conversation_id)
+            if conv is None or conv.history_epoch != from_epoch:
+                return None
+            conv.history_epoch += 1
+            for i, raw in enumerate(provider_messages):
+                s.add(
+                    ProviderMessage(
+                        conversation_id=conversation_id,
+                        history_epoch=conv.history_epoch,
+                        provider=provider,
+                        seq_no=i + 1,
+                        role=raw["role"],
+                        raw_json=json.dumps(raw, ensure_ascii=False),
+                        turn_id=turn_id,
+                        created_at=now,
+                    )
+                )
+            if summary:
+                # 中立历史里也留一份摘要：会话页能看到，换了提供商时从它重建上下文。
+                s.add(
+                    Message(
+                        conversation_id=conversation_id,
+                        history_epoch=conv.history_epoch,
+                        direction="summary",
+                        content=summary,
+                        attachments_json="[]",
+                        is_mention=0,
+                        triggered=0,
+                        created_at=now,
+                    )
+                )
+            return conv.history_epoch
+
+    async def add_turn_cost(self, turn_id: int, cost_usd: float) -> None:
+        """历史压缩的费用记在触发它的那一轮上，每日预算照样算进去。"""
+        async with self._sessions.begin() as s:
+            await s.execute(update(Turn).where(Turn.id == turn_id).values(cost_usd=Turn.cost_usd + cost_usd))
+
     async def load_context(
         self, *, conversation_id: int, history_epoch: int, provider: str, current_message_id: int
     ) -> TurnContext:
@@ -618,6 +657,10 @@ class ConversationRepo(_Repo):
         for m, contact in rows:
             if m.direction == "out" and m.turn_id is None:
                 continue  # 系统回复（指令结果、限频和预算提醒）不进上下文
+            if m.direction == "summary":
+                neutral.append(NeutralMessage("user", f"[之前对话的摘要]\n{m.content}"))
+                last_answered = len(neutral) - 1
+                continue
             if m.direction == "out":
                 neutral.append(NeutralMessage("assistant", m.content))
                 last_answered = len(neutral) - 1

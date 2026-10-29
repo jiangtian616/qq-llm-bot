@@ -165,7 +165,7 @@ class Message(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"))
     history_epoch: Mapped[int] = mapped_column(Integer)
-    direction: Mapped[str] = mapped_column(Text)  # in / out
+    direction: Mapped[str] = mapped_column(Text)  # in / out / summary（历史压缩后的摘要）
     sender_contact_id: Mapped[int | None] = mapped_column(
         ForeignKey("contacts.id", ondelete="SET NULL")
     )

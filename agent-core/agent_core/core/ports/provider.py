@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_core.core.models import GenerateResult, NeutralMessage
+from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.ports.secrets import SecretReader
 
 
@@ -13,6 +13,18 @@ from agent_core.core.ports.secrets import SecretReader
 class ProviderCapabilities:
     tools: bool = False
     vision: bool = False
+    compaction: bool = False
+    """能把较早的历史压缩成一条摘要消息（compact()）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class CompactResult:
+    message: Any
+    """放在新一段历史最前面的摘要消息（提供商格式），之后原样发回。"""
+    summary: str
+    """摘要的文字，存进中立历史，换提供商时用。"""
+    usage: Usage
+    cost_usd: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +113,10 @@ class LLMProvider(abc.ABC):
     @abc.abstractmethod
     async def generate(self, messages: Sequence[Any]) -> GenerateResult:
         """messages 是该提供商格式的完整历史，最后一条是本轮 user 消息。"""
+
+    async def compact(self, messages: Sequence[Any]) -> CompactResult | None:
+        """把 messages（以 assistant 回复结尾）压缩成一条摘要消息；不支持或没拿到摘要时返回 None。"""
+        return None
 
     async def aclose(self) -> None:
         return None

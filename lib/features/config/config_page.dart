@@ -78,6 +78,8 @@ class ConfigPage extends GetView<ConfigController> {
                 const SizedBox(height: 20),
                 const _BehaviorSection(),
                 const SizedBox(height: 20),
+                _ContextSection(key: ValueKey(_contextKey(controller.settings))),
+                const SizedBox(height: 20),
                 _LimitsSection(key: ValueKey(_limitsKey(controller.settings))),
               ],
             );
@@ -89,6 +91,8 @@ class ConfigPage extends GetView<ConfigController> {
 
   /// 配置变了就用新值重建输入框；保存结果的提示放在 controller 里，重建后还在。
   static String _limitsKey(Map<String, dynamic> s) => [for (final k in _LimitsSectionState.keys) s[k]].join('|');
+
+  static String _contextKey(Map<String, dynamic> s) => [for (final k in _ContextSectionState.keys) s[k]].join('|');
 
   static String _profileKey(ProfileInfo p) =>
       '${p.id}|${p.name}|${p.provider}|${p.model}|${p.apiKeyHint}|${p.params}|${p.systemPrompt.hashCode}';
@@ -898,6 +902,98 @@ class _BehaviorSection extends GetView<ConfigController> {
           ],
         );
       }),
+    );
+  }
+}
+
+// ---------------- 上下文与历史 ----------------
+
+class _ContextSection extends StatefulWidget {
+  const _ContextSection({super.key});
+
+  @override
+  State<_ContextSection> createState() => _ContextSectionState();
+}
+
+class _ContextSectionState extends State<_ContextSection> {
+  static const keys = [
+    'group.context_max_messages',
+    'group.context_max_chars',
+    'history.compact_at_tokens',
+    'history.max_turns',
+    'history.keep_recent_turns',
+  ];
+
+  final _c = Get.find<ConfigController>();
+  late final Map<String, TextEditingController> _fields = {
+    for (final k in keys) k: TextEditingController(text: _c.settings[k] == null ? '' : '${_c.settings[k]}'),
+  };
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    for (final f in _fields.values) {
+      f.dispose();
+    }
+    super.dispose();
+  }
+
+  void _show(String message, {bool error = false}) => _c.contextNotice.value = (message, error);
+
+  Future<void> _save() async {
+    final values = <String, Object?>{};
+    for (final k in keys) {
+      final v = int.tryParse(_fields[k]!.text.trim());
+      if (v == null || v < 0) return _show('这几项都要填不小于 0 的整数', error: true);
+      values[k] = v;
+    }
+    setState(() => _saving = true);
+    final error = await _c.setSettings(values);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    _show(error ?? '已保存', error: error != null);
+  }
+
+  Widget _field(String key, String label, String helper, {String? suffix}) => TextField(
+        controller: _fields[key],
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(labelText: label, helperText: helper, suffixText: suffix),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return _Section(
+      icon: Icons.history_outlined,
+      title: '上下文与历史',
+      subtitle: '全局生效；控制每次请求带多少历史，历史太长时较早的部分压成摘要',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _FieldGrid(children: [
+            _field('group.context_max_messages', '期间的群消息最多带', '上一轮之后没触发回复的群消息，只带最新的；0 表示不限',
+                suffix: '条'),
+            _field('group.context_max_chars', '期间的群消息最多带', '更早的只告诉模型省略了几条；0 表示不限', suffix: '字'),
+            _field('history.compact_at_tokens', '历史超过多少时压缩', '按下一次请求的大小估算；0 表示不按 token 压缩',
+                suffix: 'token'),
+            _field('history.max_turns', '或者超过多少轮时压缩', '0 表示不按轮数压缩', suffix: '轮'),
+            _field('history.keep_recent_turns', '压缩时原文保留最近', '更早的部分换成摘要', suffix: '轮'),
+          ]),
+          const SizedBox(height: 16),
+          Text(
+            '压缩用 Claude 的按需压缩：服务端写摘要，费用和普通请求一样，算进每日预算。'
+            '模型不支持压缩时（比如 Haiku 4.5），只保留最近几轮。',
+            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          Obx(() {
+            final notice = _c.contextNotice.value;
+            return _Footer(
+              notice: notice == null ? null : _Notice(notice.$1, error: notice.$2),
+              onSave: _saving ? null : _save,
+            );
+          }),
+        ],
+      ),
     );
   }
 }

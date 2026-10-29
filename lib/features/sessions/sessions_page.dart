@@ -252,9 +252,11 @@ class _MessageList extends GetView<SessionsController> {
       final items = <Widget>[];
       int? epoch;
       for (final m in messages) {
-        if (epoch != null && m.historyEpoch != epoch) items.add(_EpochDivider(epoch: m.historyEpoch));
+        if (epoch != null && m.historyEpoch != epoch) {
+          items.add(_EpochDivider(epoch: m.historyEpoch, summarized: m.isSummary));
+        }
         epoch = m.historyEpoch;
-        items.add(_Bubble(message: m));
+        items.add(m.isSummary ? _SummaryNote(message: m) : _Bubble(message: m));
       }
       // 最新的消息在最下面，默认滚到底。
       return ListView(reverse: true, padding: const EdgeInsets.all(16), children: items.reversed.toList());
@@ -263,9 +265,12 @@ class _MessageList extends GetView<SessionsController> {
 }
 
 class _EpochDivider extends StatelessWidget {
-  const _EpochDivider({required this.epoch});
+  const _EpochDivider({required this.epoch, this.summarized = false});
 
   final int epoch;
+
+  /// 这一段是历史压缩开始的：之前的内容换成了摘要和最近几轮原文。
+  final bool summarized;
 
   @override
   Widget build(BuildContext context) {
@@ -277,9 +282,49 @@ class _EpochDivider extends StatelessWidget {
           const Expanded(child: Divider()),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text('历史第 ${epoch + 1} 段：之前的内容不再带入上下文', style: style),
+            child: Text(
+              summarized ? '历史第 ${epoch + 1} 段：较早的内容已压缩成摘要，最近几轮原文保留' : '历史第 ${epoch + 1} 段：之前的内容不再带入上下文',
+              style: style,
+            ),
           ),
           const Expanded(child: Divider()),
+        ],
+      ),
+    );
+  }
+}
+
+/// 历史压缩生成的摘要：模型在新一段里看到的是它，加上最近几轮原文。
+class _SummaryNote extends StatelessWidget {
+  const _SummaryNote({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.summarize_outlined, size: 16, color: cs.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Text('之前对话的摘要 · ${formatTime(message.createdAt)}',
+                  style: theme.textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SelectableText(message.content, style: theme.textTheme.bodyMedium),
         ],
       ),
     );

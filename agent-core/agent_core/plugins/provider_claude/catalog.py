@@ -64,6 +64,12 @@ HAIKU_LONG_PROMPT = Price(0.50, 2.50, 0.05)
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 
+# 支持按需压缩（compaction 参数，beta compact-2026-09-04）的模型，按官方文档 build-with-claude/compaction-on-demand。
+COMPACTION_MODELS = frozenset({
+    "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5",
+    "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6",
+})
+
 # 不用流式请求，max_tokens 压在 16000 以内，免得一次请求太久超时。
 MAX_TOKENS_LIMIT = 16_000
 

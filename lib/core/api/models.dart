@@ -311,6 +311,7 @@ class ChatMessage {
   const ChatMessage({
     required this.id,
     required this.isOutgoing,
+    required this.isSummary,
     required this.historyEpoch,
     required this.content,
     required this.attachmentCount,
@@ -323,6 +324,9 @@ class ChatMessage {
 
   final int id;
   final bool isOutgoing;
+
+  /// 历史压缩后的摘要：新一段历史从它开始。
+  final bool isSummary;
   final int historyEpoch;
   final String content;
   final int attachmentCount;
@@ -335,6 +339,7 @@ class ChatMessage {
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
         id: json['id'] as int,
         isOutgoing: json['direction'] == 'out',
+        isSummary: json['direction'] == 'summary',
         historyEpoch: json['history_epoch'] as int,
         content: json['content'] as String,
         attachmentCount: (json['attachments'] as List<dynamic>).length,
