@@ -92,7 +92,7 @@ class _CoreStatusCard extends GetView<DashboardController> {
                 _HealthTable(health: health)
               else
                 Text(
-                  status == CoreStatus.notRunning ? '服务未运行。点「启动核心服务」拉起它；关掉界面不会影响已经在运行的服务。' : '正在检查……',
+                  status == CoreStatus.notRunning ? '服务未运行。点「启动核心服务」拉起它；窗口缩到托盘时服务继续运行，退出桌面端时服务一起停止。' : '正在检查……',
                   style: theme.textTheme.bodyMedium,
                 ),
             ],
