@@ -6,15 +6,14 @@ import '../api/models.dart';
 import '../connection/connection_store.dart';
 
 /// 某个配置项在界面上怎么编辑。
-enum _Kind { toggle, choice, integer, decimal, text, profile }
+enum _Kind { toggle, integer, decimal, text, profile }
 
 class _Spec {
-  const _Spec(this.label, this.kind, {this.helper, this.choices = const {}, this.min = 0, this.nullLabel});
+  const _Spec(this.label, this.kind, {this.helper, this.min = 0, this.nullLabel});
 
   final String label;
   final _Kind kind;
   final String? helper;
-  final Map<String, String> choices;
   final num min;
 
   /// 值为空时显示什么（比如「不限」）。
@@ -22,11 +21,6 @@ class _Spec {
 }
 
 const _specs = <String, _Spec>{
-  'group.trigger': _Spec('群聊里哪些消息触发回复', _Kind.choice, choices: {
-    'at_only': '只回复 @机器人 的消息',
-    'all': '未 @ 的消息也回复',
-  }),
-  'group.keep_untriggered': _Spec('没触发回复的群消息也作为上下文', _Kind.toggle),
   'group.context_max_messages': _Spec('回复时最多带上多少条期间的群消息', _Kind.integer,
       helper: '只带最新的，更早的只告诉模型省略了几条；0 表示不限'),
   'group.context_max_chars': _Spec('期间的群消息最多带多少字', _Kind.integer, helper: '0 表示不限'),
@@ -51,8 +45,6 @@ const _notInherited = {'budget.daily_usd'};
 
 /// 账号可以单独设置的配置项。
 const accountSettingKeys = [
-  'group.trigger',
-  'group.keep_untriggered',
   'group.context_max_messages',
   'group.context_max_chars',
   'c2c.enabled',
@@ -72,8 +64,6 @@ const accountSettingKeys = [
 /// 会话可以单独设置的配置项；群和单聊各自只显示用得上的。
 List<String> conversationSettingKeys({required bool isGroup}) => [
       if (isGroup) ...[
-        'group.trigger',
-        'group.keep_untriggered',
         'group.context_max_messages',
         'group.context_max_chars',
       ] else
@@ -199,7 +189,6 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
     if (value == null) return spec.nullLabel ?? '未设置';
     return switch (spec.kind) {
       _Kind.toggle => value == true ? '开' : '关',
-      _Kind.choice => spec.choices[value] ?? '$value',
       _Kind.profile => _profiles.firstWhereOrNull((p) => p.id == value)?.name ?? '#$value',
       _ => '$value',
     };
@@ -261,11 +250,6 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
     void set(Object? v) => setState(() => _values[key] = v);
     return switch (spec.kind) {
       _Kind.toggle => Switch(value: _values[key] == true, onChanged: set),
-      _Kind.choice => DropdownButton<String>(
-          value: spec.choices.containsKey(_values[key]) ? _values[key] as String : spec.choices.keys.first,
-          items: [for (final e in spec.choices.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
-          onChanged: set,
-        ),
       _Kind.profile => DropdownButton<int>(
           value: _profiles.any((p) => p.id == _values[key]) ? _values[key] as int : _profiles.first.id,
           items: [for (final p in _profiles) DropdownMenuItem(value: p.id, child: Text('${p.name}（${p.model}）'))],
@@ -300,7 +284,6 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
                 _values[key] ??= inheritedValue;
                 // 继承下来的是「空」（比如「第一个模型配置」）时，下拉框显示第一项，保存的也要是这一项。
                 if (spec.kind == _Kind.profile) _values[key] ??= _profiles.first.id;
-                if (spec.kind == _Kind.choice) _values[key] ??= spec.choices.keys.first;
                 if (_texts[key]!.text.isEmpty && inheritedValue != null) _texts[key]!.text = '$inheritedValue';
               } else {
                 _overridden.remove(key);

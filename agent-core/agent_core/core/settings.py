@@ -5,11 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 DEFAULTS: dict[str, Any] = {
-    # at_only：只回复 @机器人 的消息；all：未 @ 的群消息也触发回复（平台推不推送由群里的消息接收设置决定）
-    "group.trigger": "at_only",
-    # 没触发回复的群消息是否存为上下文
-    "group.keep_untriggered": True,
-    # 上一轮之后没触发回复的群消息拼进本轮时，最多带最新的多少条、多少字；更早的只留一行「省略了 N 条」。0 表示不限
+    # 上一轮之后没触发回复（被限频或预算挡下）的群消息拼进本轮时，最多带最新的多少条、多少字；更早的只留一行「省略了 N 条」。0 表示不限
     "group.context_max_messages": 20,
     "group.context_max_chars": 2000,
     "c2c.enabled": True,

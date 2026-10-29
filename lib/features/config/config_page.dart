@@ -861,26 +861,10 @@ class _BehaviorSection extends GetView<ConfigController> {
         return Column(
           children: [
             _SettingRow(
-              title: '群聊里哪些消息触发回复',
-              subtitle: '平台推送哪些群消息由 QQ 客户端的群设置决定；群里设成「仅 @」时，选「全部消息」也没有效果',
-              trailing: SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'at_only', label: Text('仅 @机器人')),
-                  ButtonSegment(value: 'all', label: Text('全部消息')),
-                ],
-                selected: {(s['group.trigger'] as String?) ?? 'at_only'},
-                showSelectedIcon: false,
-                onSelectionChanged: (v) => _report(controller.setSetting('group.trigger', v.single)),
-              ),
-            ),
-            const Divider(height: 1),
-            _SettingRow(
-              title: '没触发回复的群消息也作为上下文',
-              subtitle: '机器人回复时能看到期间群里聊了什么',
-              trailing: Switch(
-                value: (s['group.keep_untriggered'] as bool?) ?? true,
-                onChanged: (v) => _report(controller.setSetting('group.keep_untriggered', v)),
-              ),
+              title: '群聊消息',
+              subtitle: '推给机器人的群消息都会回复。推哪些由 QQ 客户端里的群设置决定：'
+                  '「仅 @机器人」只回 @ 它的消息，「接收全部消息」每条都回',
+              trailing: const SizedBox.shrink(),
             ),
             const Divider(height: 1),
             _SettingRow(
@@ -971,7 +955,7 @@ class _ContextSectionState extends State<_ContextSection> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _FieldGrid(children: [
-            _field('group.context_max_messages', '期间的群消息最多带', '上一轮之后没触发回复的群消息，只带最新的；0 表示不限',
+            _field('group.context_max_messages', '期间的群消息最多带', '被限频或预算挡下、没回复的群消息，只带最新的；0 表示不限',
                 suffix: '条'),
             _field('group.context_max_chars', '期间的群消息最多带', '更早的只告诉模型省略了几条；0 表示不限', suffix: '字'),
             _field('history.compact_at_tokens', '历史超过多少时压缩', '按下一次请求的大小估算；0 表示不按 token 压缩',

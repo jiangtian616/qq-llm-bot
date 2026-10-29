@@ -233,7 +233,7 @@ class _BotStateBar extends GetView<SessionsController> {
                 '设置本身仍然可以在 QQ 客户端的群设置里修改。收到过未 @ 的群消息时，这里会按推断显示。'
             : '平台向机器人推送哪些群消息，由 QQ 客户端里的群设置决定，应用只能查询、不能修改。'
                 '改完回来点刷新。\n\n'
-                '群里设成「仅 @机器人」时，配置页里的「未 @ 的消息也回复」没有效果。'
+                '推给机器人的群消息都会回复：设成「仅 @机器人」只回 @ 它的消息，设成「接收全部消息」每条都回。'
                 '${b.error != null ? '\n\n最近一次查询失败：${b.error}' : ''}'),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('知道了'))],
       ),

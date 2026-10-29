@@ -77,14 +77,10 @@ class AgentEngine:
             return await db.settings.resolve(key, account_id=msg.account_id, conversation_id=conv_id)
 
         if msg.scene == Scene.GROUP:
-            triggered = msg.is_mention or (await setting("group.trigger")) == "all"
-            keep = triggered or bool(await setting("group.keep_untriggered"))
+            # 平台推送哪些群消息由 QQ 客户端里的群设置决定（仅 @机器人 / 全部消息），推过来的都回复。
+            triggered = True
         else:
             triggered = bool(await setting("c2c.enabled"))
-            keep = True
-        if not keep:
-            await db.inbox.finish(inbox.id, "ignored")
-            return
 
         command = None
         prefix = await setting("command.prefix")

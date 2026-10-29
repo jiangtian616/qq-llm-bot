@@ -351,7 +351,7 @@ class TurnContext:
     neutral_before: list[NeutralMessage]
     """当前 epoch 里到上一轮为止的中立历史，重建上下文时用。"""
     pending: list[NeutralMessage]
-    """上一轮之后没触发回复的群消息，拼进本轮 user 消息里，模型才知道期间聊了什么（比如先发图再 @ 机器人）。"""
+    """上一轮之后没触发回复（被限频或预算挡下）的群消息，拼进本轮 user 消息里，模型才知道期间聊了什么。"""
 
 
 @dataclass(frozen=True, slots=True)
