@@ -18,9 +18,10 @@ from agent_core.control.api import build_router
 from agent_core.control.api_views import build_views_router
 from agent_core.control.auth import require_token, websocket_authorized
 from agent_core.control.state import ControlState
+from agent_core.core.ports.provider import ProviderSpec
 
 
-def create_app(state: ControlState, provider_names: list[str] | None = None) -> FastAPI:
+def create_app(state: ControlState, providers: dict[str, ProviderSpec] | None = None) -> FastAPI:
     app = FastAPI(
         title="qq-llm-bot agent-core",
         version=__version__,
@@ -28,7 +29,7 @@ def create_app(state: ControlState, provider_names: list[str] | None = None) -> 
         redoc_url=None,
     )
     app.state.control = state
-    app.state.provider_names = provider_names or []
+    app.state.providers = providers or {}
     app.include_router(_router())
     app.include_router(build_router())
     app.include_router(build_views_router())

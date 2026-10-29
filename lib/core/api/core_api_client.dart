@@ -64,6 +64,9 @@ class CoreApiClient {
 
   // ---- 模型配置 ----
 
+  Future<List<ProviderSpec>> listProviders() async =>
+      [for (final p in await _get('/providers') as List<dynamic>) ProviderSpec.fromJson(p as Map<String, dynamic>)];
+
   Future<List<ProfileInfo>> listProfiles() async =>
       [for (final p in await _get('/profiles') as List<dynamic>) ProfileInfo.fromJson(p as Map<String, dynamic>)];
 

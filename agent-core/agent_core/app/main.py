@@ -187,7 +187,10 @@ async def _serve(
 
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(state, provider_names=registry.available("provider")),
+            create_app(
+                state,
+                providers={n: registry.load("provider", n).describe() for n in registry.available("provider")},
+            ),
             log_config=None,
             access_log=False,
             timeout_graceful_shutdown=GRACEFUL_TIMEOUT_S,

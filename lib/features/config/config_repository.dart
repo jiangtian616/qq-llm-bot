@@ -40,6 +40,8 @@ class ConfigRepository {
 
   Future<void> deleteAccount(int id) => _api.deleteAccount(id);
 
+  Future<List<ProviderSpec>> providers() => _api.listProviders();
+
   Future<List<ProfileInfo>> profiles() => _api.listProfiles();
 
   Future<void> updateProfile(int id, Map<String, dynamic> fields) => _api.updateProfile(id, fields);

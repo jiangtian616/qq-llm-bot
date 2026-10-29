@@ -126,6 +126,79 @@ class ProfileInfo {
       );
 }
 
+/// 提供商的一个模型（GET /providers）。
+class ModelSpec {
+  const ModelSpec({
+    required this.id,
+    required this.label,
+    required this.efforts,
+    required this.defaultEffort,
+    required this.maxOutputTokens,
+    required this.inputPrice,
+    required this.outputPrice,
+    required this.legacy,
+  });
+
+  final String id;
+  final String label;
+
+  /// 支持的 effort 级别，从低到高；空表示这个模型不接受 effort。
+  final List<String> efforts;
+  final String? defaultEffort;
+  final int maxOutputTokens;
+
+  /// 美元 / 百万 token。
+  final double inputPrice;
+  final double outputPrice;
+
+  /// 上一代模型。
+  final bool legacy;
+
+  factory ModelSpec.fromJson(Map<String, dynamic> json) => ModelSpec(
+        id: json['id'] as String,
+        label: json['label'] as String,
+        efforts: [for (final e in json['efforts'] as List<dynamic>) e as String],
+        defaultEffort: json['default_effort'] as String?,
+        maxOutputTokens: json['max_output_tokens'] as int,
+        inputPrice: (json['input_price'] as num).toDouble(),
+        outputPrice: (json['output_price'] as num).toDouble(),
+        legacy: json['legacy'] as bool,
+      );
+}
+
+/// 模型提供商的说明：模型目录、API Key 的叫法、max_tokens 上限。
+class ProviderSpec {
+  const ProviderSpec({
+    required this.name,
+    required this.displayName,
+    required this.apiKeyLabel,
+    required this.apiKeyHelp,
+    required this.models,
+    required this.defaultModel,
+    required this.maxTokensLimit,
+  });
+
+  final String name;
+  final String displayName;
+  final String apiKeyLabel;
+  final String apiKeyHelp;
+  final List<ModelSpec> models;
+  final String defaultModel;
+  final int maxTokensLimit;
+
+  ModelSpec? model(String id) => models.where((m) => m.id == id).firstOrNull;
+
+  factory ProviderSpec.fromJson(Map<String, dynamic> json) => ProviderSpec(
+        name: json['name'] as String,
+        displayName: json['display_name'] as String,
+        apiKeyLabel: json['api_key_label'] as String,
+        apiKeyHelp: json['api_key_help'] as String,
+        models: [for (final m in json['models'] as List<dynamic>) ModelSpec.fromJson(m as Map<String, dynamic>)],
+        defaultModel: json['default_model'] as String,
+        maxTokensLimit: json['max_tokens_limit'] as int,
+      );
+}
+
 /// 机器人在群里的状态（只读，消息接收设置只能在 QQ 客户端里改）。
 class BotState {
   const BotState({

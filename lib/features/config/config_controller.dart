@@ -11,6 +11,7 @@ class ConfigController extends GetxController {
 
   final accounts = <AccountInfo>[].obs;
   final profiles = <ProfileInfo>[].obs;
+  final providers = <String, ProviderSpec>{}.obs;
   final settings = <String, dynamic>{}.obs;
   final loading = false.obs;
   final error = RxnString();
@@ -38,10 +39,12 @@ class ConfigController extends GetxController {
   Future<void> load({bool quiet = false}) async {
     if (!quiet) loading.value = true;
     try {
-      final results = await Future.wait([repository.accounts(), repository.profiles(), repository.globalSettings()]);
+      final results = await Future.wait(
+          [repository.accounts(), repository.profiles(), repository.globalSettings(), repository.providers()]);
       accounts.assignAll(results[0] as List<AccountInfo>);
       profiles.assignAll(results[1] as List<ProfileInfo>);
       settings.assignAll(results[2] as Map<String, dynamic>);
+      providers.assignAll({for (final p in results[3] as List<ProviderSpec>) p.name: p});
       error.value = null;
     } on Object catch (e) {
       error.value = e.toString();

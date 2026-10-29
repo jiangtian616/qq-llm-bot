@@ -1,8 +1,11 @@
 """ClaudeProvider：模型提供商插槽的 Claude 实现（官方 SDK anthropic 的 AsyncAnthropic）。
 
 要点：
-- 默认 claude-haiku-5-5，effort 设为 low（Haiku 5.5 默认是 medium，聊天用 low 更快更省）。
+- 默认 claude-haiku-5-5，effort 设为 low（Haiku 5.5 默认是 medium，聊天用 low 更快更省）。模型目录见 catalog.py。
 - 历史只追加、不改写：assistant 回复原样保存完整的 response.content（包括 thinking 块）。
+  但发请求时去掉历史里的 thinking 块：图片换成了文字标记、系统提示词改过之后，思考块前面的内容就和生成时不一样了，
+  新模型（Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.1）发回这样的思考块会返回 400。聊天不需要前几轮的思考过程。
+- 不传 thinking：这几个模型默认就是自适应思考；Haiku 4.5 这类不支持 effort 的模型也不传 effort。
 - stop_reason == "refusal" 时没有正常内容，回一句固定话术；Haiku 没有服务端自动换模型的功能。
 - system prompt 保持固定并开启 prompt caching；SDK 自带 2 次重试（429、5xx、网络错误）。
 """
@@ -17,38 +20,46 @@ from anthropic import AsyncAnthropic
 from anthropic.types import Message
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
-from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext
+from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
+from agent_core.plugins.provider_claude.catalog import DEFAULT_MODEL, HAIKU_LONG_PROMPT, PRICES, SPEC
 
-DEFAULT_MODEL = "claude-haiku-5-5"
 DEFAULT_EFFORT = "low"
 DEFAULT_MAX_TOKENS = 1500
-DEFAULT_TIMEOUT_S = 60.0
+# 高 effort 下思考时间更长，60 秒不够。
+DEFAULT_TIMEOUT_S = 120.0
 DEFAULT_REFUSAL_REPLY = "抱歉，这个问题我没法回答。"
+# 去掉思考块后 assistant 消息没有内容了（比如思考用完了 max_tokens），用它占位，空消息会让请求报错。
+EMPTY_ASSISTANT_TEXT = "（没有回复）"
 
-# 美元 / 百万 token（输入、输出）。缓存读取按输入价的 0.1 倍、5 分钟缓存写入按 1.25 倍计。
-# Haiku 5.5 的提示超过 10 万 token 时是另一档价格（0.50 / 2.50）。
-PRICES: dict[str, tuple[float, float]] = {
-    "claude-haiku-5-5": (0.10, 0.50),
-    "claude-sonnet-5-5": (2.0, 10.0),
-    "claude-opus-5-5": (4.0, 20.0),
-}
-_HAIKU_LONG_PROMPT = (0.50, 2.50)
+_THINKING_BLOCKS = {"thinking", "redacted_thinking"}
 
 
 def estimate_cost(model: str, usage: Usage) -> float:
+    """5 分钟缓存写入按输入价的 1.25 倍计，缓存读取用目录里各模型自己的价格。"""
     price = PRICES.get(model)
     if price is None:
         return 0.0
     prompt = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens
     if model == "claude-haiku-5-5" and prompt > 100_000:
-        price = _HAIKU_LONG_PROMPT
-    in_price, out_price = price
+        price = HAIKU_LONG_PROMPT
     return (
-        usage.input_tokens * in_price
-        + usage.cache_read_tokens * in_price * 0.1
-        + usage.cache_write_tokens * in_price * 1.25
-        + usage.output_tokens * out_price
+        usage.input_tokens * price.input
+        + usage.cache_read_tokens * price.cache_read
+        + usage.cache_write_tokens * price.input * 1.25
+        + usage.output_tokens * price.output
     ) / 1_000_000
+
+
+def without_thinking(messages: Sequence[Any]) -> list[Any]:
+    """去掉历史 assistant 消息里的 thinking / redacted_thinking 块，其余原样保留。"""
+    out: list[Any] = []
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            out.append(m)
+            continue
+        kept = [b for b in m["content"] if not (isinstance(b, dict) and b.get("type") in _THINKING_BLOCKS)]
+        out.append({**m, "content": kept or [{"type": "text", "text": EMPTY_ASSISTANT_TEXT}]})
+    return out
 
 
 class MissingApiKeyError(RuntimeError):
@@ -58,11 +69,18 @@ class MissingApiKeyError(RuntimeError):
 class ClaudeProvider(LLMProvider):
     name = "claude"
 
+    @classmethod
+    def describe(cls) -> ProviderSpec:
+        return SPEC
+
     def __init__(self, ctx: ProviderContext, *, client: AsyncAnthropic | None = None) -> None:
         super().__init__(ctx)
         params = ctx.params
         self.model = ctx.model or DEFAULT_MODEL
-        self.effort = params.get("effort", DEFAULT_EFFORT)
+        # 目录里没有的模型照样调用，但不传 effort，免得模型不认这个参数。
+        spec = SPEC.model(self.model)
+        effort = params.get("effort", DEFAULT_EFFORT)
+        self.effort: str | None = effort if spec is not None and effort in spec.efforts else None
         self.max_tokens = int(params.get("max_tokens", DEFAULT_MAX_TOKENS))
         self.refusal_reply = params.get("refusal_reply", DEFAULT_REFUSAL_REPLY)
         if client is None:
@@ -110,10 +128,11 @@ class ClaudeProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "messages": list(messages),
-            "output_config": {"effort": self.effort},
+            "messages": without_thinking(messages),
             "cache_control": {"type": "ephemeral"},
         }
+        if self.effort is not None:
+            kwargs["output_config"] = {"effort": self.effort}
         if self.ctx.system_prompt:
             kwargs["system"] = self.ctx.system_prompt
         response: Message = await self._client.messages.create(**kwargs)

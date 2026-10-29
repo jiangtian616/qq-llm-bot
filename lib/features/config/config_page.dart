@@ -6,13 +6,16 @@ import '../../core/ui/placeholder_view.dart';
 import '../../core/ui/scoped_settings_dialog.dart';
 import 'config_controller.dart';
 
-const _models = {
-  'claude-haiku-5-5': 'Claude Haiku 5.5（最快最省，适合闲聊）',
-  'claude-sonnet-5-5': 'Claude Sonnet 5.5（推理更强）',
-  'claude-opus-5-5': 'Claude Opus 5.5（长文和复杂分析）',
+const _effortLabels = {
+  'low': '低（更快更省）',
+  'medium': '中',
+  'high': '高',
+  'xhigh': '很高（费用明显更高）',
+  'max': '最高（不限 token，费用最高）',
 };
 
-const _efforts = {'low': '低（更快更省）', 'medium': '中', 'high': '高'};
+/// 新建或换模型时优先用的 effort：聊天用 low 更快更省。
+const _preferredEffort = 'low';
 
 class ConfigPage extends GetView<ConfigController> {
   const ConfigPage({super.key});
@@ -46,7 +49,7 @@ class ConfigPage extends GetView<ConfigController> {
           const _AccountsCard(),
           const SizedBox(height: 16),
           for (final p in controller.profiles) ...[
-            _ProfileCard(key: ValueKey(_profileKey(p)), profile: p),
+            _ProfileCard(key: ValueKey(_profileKey(p)), profile: p, spec: controller.providers[p.provider]),
             const SizedBox(height: 16),
           ],
           const _BehaviorCard(),
@@ -275,9 +278,12 @@ class _AccountDialogState extends State<_AccountDialog> {
 // ---------------- 模型配置 ----------------
 
 class _ProfileCard extends StatefulWidget {
-  const _ProfileCard({super.key, required this.profile});
+  const _ProfileCard({super.key, required this.profile, required this.spec});
 
   final ProfileInfo profile;
+
+  /// 提供商的说明（模型目录等）；核心服务没给时为 null，只能改名称、API Key 和提示词。
+  final ProviderSpec? spec;
 
   @override
   State<_ProfileCard> createState() => _ProfileCardState();
@@ -289,7 +295,7 @@ class _ProfileCardState extends State<_ProfileCard> {
   late final _maxTokens = TextEditingController(text: '${widget.profile.params['max_tokens'] ?? 1500}');
   late final _prompt = TextEditingController(text: widget.profile.systemPrompt);
   late String _model = widget.profile.model;
-  late String _effort = (widget.profile.params['effort'] as String?) ?? 'low';
+  late String? _effort = widget.profile.params['effort'] as String?;
   bool _saving = false;
   String? _message;
   bool _messageIsError = false;
@@ -303,21 +309,40 @@ class _ProfileCardState extends State<_ProfileCard> {
     super.dispose();
   }
 
+  ModelSpec? get _modelSpec => widget.spec?.model(_model);
+
+  /// 当前模型能用的 effort：已选的不支持时换成 low，没有 low 就用模型默认值。
+  String? _effortFor(ModelSpec? model, String? current) {
+    if (model == null || model.efforts.isEmpty) return null;
+    if (current != null && model.efforts.contains(current)) return current;
+    return model.efforts.contains(_preferredEffort) ? _preferredEffort : model.defaultEffort;
+  }
+
+  int get _maxTokensLimit {
+    final spec = widget.spec;
+    final model = _modelSpec;
+    if (spec == null || model == null) return 16000;
+    return model.maxOutputTokens < spec.maxTokensLimit ? model.maxOutputTokens : spec.maxTokensLimit;
+  }
+
   Future<void> _save() async {
+    final spec = widget.spec;
     final maxTokens = int.tryParse(_maxTokens.text.trim());
-    if (maxTokens == null || maxTokens < 64) {
+    if (maxTokens == null || maxTokens < 64 || maxTokens > _maxTokensLimit) {
       setState(() {
-        _message = '最大回复长度要是不小于 64 的整数';
+        _message = '最大输出 token 要是 64 到 $_maxTokensLimit 之间的整数';
         _messageIsError = true;
       });
       return;
     }
+    final effort = _effortFor(_modelSpec, _effort);
+    final params = {...widget.profile.params, 'max_tokens': maxTokens}..remove('effort');
     setState(() => _saving = true);
     final error = await Get.find<ConfigController>().updateProfile(widget.profile.id, {
       'name': _name.text.trim().isEmpty ? widget.profile.name : _name.text.trim(),
-      'model': _model,
+      if (spec != null) 'model': _model,
       'system_prompt': _prompt.text,
-      'params': {...widget.profile.params, 'effort': _effort, 'max_tokens': maxTokens},
+      'params': {...params, 'effort': ?effort},
       if (_apiKey.text.trim().isNotEmpty) 'api_key': _apiKey.text.trim(),
     });
     if (!mounted) return;
@@ -332,6 +357,8 @@ class _ProfileCardState extends State<_ProfileCard> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final p = widget.profile;
+    final spec = widget.spec;
+    final model = _modelSpec;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -354,30 +381,65 @@ class _ProfileCardState extends State<_ProfileCard> {
               runSpacing: 8,
               children: [
                 SizedBox(width: 200, child: TextField(controller: _name, decoration: const InputDecoration(labelText: '名称'))),
-                SizedBox(
-                  width: 340,
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _models.containsKey(_model) ? _model : null,
-                    decoration: const InputDecoration(labelText: '模型'),
-                    items: [for (final e in _models.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
-                    onChanged: (v) => setState(() => _model = v ?? _model),
+                if (spec == null)
+                  Text('核心服务没有提供「${p.provider}」的模型目录，只能修改名称、API Key 和提示词',
+                      style: TextStyle(color: theme.colorScheme.error))
+                else ...[
+                  SizedBox(
+                    width: 340,
+                    child: DropdownButtonFormField<String>(
+                      initialValue: model != null ? _model : null,
+                      decoration: InputDecoration(
+                        labelText: '模型',
+                        helperText: model == null
+                            ? '当前是 $_model，目录里没有这个模型，请重新选择'
+                            : '每百万 token：输入 \$${model.inputPrice} / 输出 \$${model.outputPrice}',
+                      ),
+                      items: [
+                        for (final m in spec.models)
+                          DropdownMenuItem(value: m.id, child: Text(m.legacy ? '${m.label}（上一代）' : m.label)),
+                      ],
+                      onChanged: (v) => setState(() {
+                        _model = v ?? _model;
+                        _effort = _effortFor(_modelSpec, _effort);
+                      }),
+                    ),
                   ),
-                ),
+                  if (model != null && model.efforts.isNotEmpty)
+                    SizedBox(
+                      width: 240,
+                      child: DropdownButtonFormField<String>(
+                        key: ValueKey(model.id),
+                        initialValue: _effortFor(model, _effort),
+                        decoration: const InputDecoration(labelText: '思考力度（effort）'),
+                        items: [
+                          for (final e in model.efforts)
+                            DropdownMenuItem(
+                              value: e,
+                              child: Text('${_effortLabels[e] ?? e}${e == model.defaultEffort ? '（模型默认）' : ''}'),
+                            ),
+                        ],
+                        onChanged: (v) => setState(() => _effort = v ?? _effort),
+                      ),
+                    )
+                  else if (model != null)
+                    const SizedBox(
+                      width: 240,
+                      child: InputDecorator(
+                        decoration: InputDecoration(labelText: '思考力度（effort）'),
+                        child: Text('这个模型不支持'),
+                      ),
+                    ),
+                ],
                 SizedBox(
-                  width: 160,
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _efforts.containsKey(_effort) ? _effort : 'low',
-                    decoration: const InputDecoration(labelText: '思考力度（effort）'),
-                    items: [for (final e in _efforts.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
-                    onChanged: (v) => setState(() => _effort = v ?? _effort),
-                  ),
-                ),
-                SizedBox(
-                  width: 160,
+                  width: 200,
                   child: TextField(
                     controller: _maxTokens,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: '最大回复长度（token）'),
+                    decoration: InputDecoration(
+                      labelText: '最大输出 token（含思考）',
+                      helperText: '上限 $_maxTokensLimit；思考也算在里面',
+                    ),
                   ),
                 ),
               ],
@@ -387,10 +449,10 @@ class _ProfileCardState extends State<_ProfileCard> {
               controller: _apiKey,
               obscureText: true,
               decoration: InputDecoration(
-                labelText: 'Claude API Key',
+                labelText: spec?.apiKeyLabel ?? 'API Key',
                 helperText: p.apiKeySet
                     ? '当前 ${p.apiKeyHint}；留空表示不修改。只存系统密钥库'
-                    : '建议为本应用单独创建一个 Key，并在 Claude Console 给它所在的工作区设花费上限',
+                    : spec?.apiKeyHelp ?? '只存系统密钥库',
               ),
             ),
             const SizedBox(height: 8),

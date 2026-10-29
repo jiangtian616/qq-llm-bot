@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any
 
@@ -16,6 +17,7 @@ from agent_core.control.auth import require_token
 from agent_core.control.state import ControlState
 from agent_core.core.bus import BusEvent
 from agent_core.core.clock import start_of_local_day_ms
+from agent_core.core.ports.provider import ProviderSpec
 from agent_core.core.settings import DEFAULTS, SCOPES
 
 DEFAULT_INTENTS = 1 << 25  # GROUP_AND_C2C_EVENT：群聊和单聊事件
@@ -229,6 +231,18 @@ def build_router() -> APIRouter:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "模型配置不存在")
         return profile
 
+    @r.get("/providers")
+    async def list_providers(request: Request) -> list[dict[str, Any]]:
+        """各提供商的说明：模型目录、各模型支持的 effort 和输出上限。桌面端按它画模型配置界面。"""
+        return [dataclasses.asdict(spec) for spec in _providers(request).values()]
+
+    def check_profile(request: Request, provider: str, model: str, params: dict[str, Any]) -> None:
+        spec = _providers(request).get(provider)
+        if spec is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"没有这个提供商插件：{provider}")
+        if (error := spec.check(model, params)) is not None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, error)
+
     @r.get("/profiles")
     async def list_profiles(request: Request) -> list[dict[str, Any]]:
         s = _ctl(request)
@@ -239,8 +253,7 @@ def build_router() -> APIRouter:
     async def create_profile(body: ProfileCreate, request: Request) -> dict[str, Any]:
         s = _ctl(request)
         provider = body.provider or "claude"
-        if provider not in _provider_names(request):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"没有这个提供商插件：{provider}")
+        check_profile(request, provider, body.model, body.params)
         profile = await s.db.profiles.create(
             name=body.name, provider=provider, model=body.model, system_prompt=body.system_prompt, params=body.params
         )
@@ -253,6 +266,9 @@ def build_router() -> APIRouter:
     async def update_profile(profile_id: int, body: ProfileUpdate, request: Request) -> dict[str, Any]:
         s = _ctl(request)
         profile = await get_profile(s, profile_id)
+        if body.model is not None or body.params is not None:
+            params = body.params if body.params is not None else json.loads(profile.params_json or "{}")
+            check_profile(request, profile.provider, body.model or profile.model, params)
         if body.api_key:
             s.secrets.set_secret(profile.secret_ref, body.api_key.strip())
         fields = body.model_dump(exclude_none=True, exclude={"api_key"})
@@ -335,5 +351,5 @@ def build_router() -> APIRouter:
     return r
 
 
-def _provider_names(request: Request) -> list[str]:
-    return request.app.state.provider_names
+def _providers(request: Request) -> dict[str, ProviderSpec]:
+    return request.app.state.providers
