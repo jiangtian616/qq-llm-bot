@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import '../../core/api/models.dart';
 import '../../core/ui/format.dart';
 import '../../core/ui/placeholder_view.dart';
+import '../../core/ui/scoped_settings_dialog.dart';
 import 'sessions_controller.dart';
 
 const _recvSettingLabels = {
@@ -102,6 +103,18 @@ class _ConversationDetail extends GetView<SessionsController> {
                   ),
                 ),
                 IconButton(tooltip: '备注名', icon: const Icon(Icons.edit_outlined), onPressed: () => _rename(context, c)),
+                IconButton(
+                  tooltip: '单独配置',
+                  icon: const Icon(Icons.tune),
+                  onPressed: () => showScopedSettingsDialog(
+                    context,
+                    scope: 'conversation',
+                    scopeId: c.id,
+                    accountId: c.accountId,
+                    title: '「${c.label}」单独配置',
+                    keys: conversationSettingKeys(isGroup: c.isGroup),
+                  ),
+                ),
                 TextButton.icon(
                   onPressed: () => _confirmClear(context, c),
                   icon: const Icon(Icons.cleaning_services_outlined),

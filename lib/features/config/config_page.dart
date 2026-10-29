@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import '../../core/api/models.dart';
 import '../../core/ui/placeholder_view.dart';
+import '../../core/ui/scoped_settings_dialog.dart';
 import 'config_controller.dart';
 
 const _models = {
@@ -114,6 +115,17 @@ class _AccountsCard extends GetView<ConfigController> {
                       Switch(
                         value: a.autoConnect,
                         onChanged: (v) => _report(controller.updateAccount(a.id, {'auto_connect': v})),
+                      ),
+                      IconButton(
+                        tooltip: '单独配置',
+                        icon: const Icon(Icons.tune),
+                        onPressed: () => showScopedSettingsDialog(
+                          context,
+                          scope: 'account',
+                          scopeId: a.id,
+                          title: '「${a.displayName}」单独配置',
+                          keys: accountSettingKeys,
+                        ),
                       ),
                       IconButton(
                         tooltip: '编辑',
@@ -433,6 +445,7 @@ class _BehaviorCard extends GetView<ConfigController> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('机器人行为（全局）', style: theme.textTheme.titleMedium),
+              Text('要给某个机器人或会话单独设置，点机器人账号或会话页里的「单独配置」按钮。', style: theme.textTheme.bodySmall),
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('群聊里哪些消息触发回复'),
