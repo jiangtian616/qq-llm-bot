@@ -52,7 +52,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 
 ### 对话历史
 
-- 两份历史：`messages` 是所有提供商共用的中立历史；`provider_messages` 是每个提供商的原始消息，只追加、不改写（Claude 的回复原样保存整个 `response.content`，包括 thinking 块）。换了提供商时，从中立历史重建上下文。
+- 两份历史：`messages` 是所有提供商共用的中立历史；`provider_messages` 是每个提供商的原始消息，只追加、不改写（Claude 的回复原样保存整个 `response.content`，包括 thinking 块）。换了提供商时，从中立历史重建上下文。同一段里换走又换回来时，原始历史接着用，中间别的提供商答过的轮次从中立历史补在后面（`ConversationRepo.load_context` 的 `missing`，按 `turn_id` 对齐），和本轮一起追加。
 - Claude 发请求时去掉历史里的 thinking 块：图片换成文字标记、改了系统提示词以后，思考块前面的内容和生成时不一样，Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.1 发回这样的思考块会返回 400。DeepSeek 同样去掉 `reasoning_content`（不带 tools 时官方说不用回传），并把连续的同角色消息合并成一条再发。
 - 历史按 `history_epoch` 分段，旧记录保留，但不再进上下文。`/清空` 时 epoch 加 1，从零开始。
 - 历史压缩（`AgentEngine._maybe_compact`）：每轮结束后估算下一次请求的 token 数，超过 `history.compact_at_tokens` 或当前这一段超过 `history.max_turns` 轮时，把较早的部分交给提供商的 `compact()` 压成摘要，最近 `history.keep_recent_turns` 轮原文保留，开始新的一段（`ConversationRepo.start_epoch`）。Claude 用官方按需压缩（beta `compact-2026-09-04`），返回的 compaction 块放在新一段最前面原样发回，之后带着它的请求都走 beta 接口；摘要文字另存一条 `direction=summary` 的中立消息。模型不支持压缩时只保留最近几轮。压缩的费用记在触发它的那一轮上。

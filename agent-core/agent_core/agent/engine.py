@@ -253,8 +253,9 @@ class AgentEngine:
                 current_message_id=ingested.message_id,
             )
             if ctx.provider_history:
-                history: list[Any] = ctx.provider_history
-                prefix: list[Any] = []
+                # 中间换过提供商又换回来：别的提供商答过的那几轮补在后面，和本轮一起追加进原始历史。
+                prefix: list[Any] = provider.build_context([note_history(m) for m in ctx.missing]) if ctx.missing else []
+                history: list[Any] = [*ctx.provider_history, *prefix]
             else:
                 # 这个提供商在当前 epoch 还没有原始历史（新会话、清空过、或刚换了提供商）：从中立历史重建，
                 # 并把重建出来的前缀一起存下来，之后同一 epoch 里只追加。

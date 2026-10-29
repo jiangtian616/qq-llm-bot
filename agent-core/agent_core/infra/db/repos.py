@@ -354,6 +354,8 @@ class TurnContext:
     next_seq: int
     neutral_before: list[NeutralMessage]
     """当前 epoch 里到上一轮为止的中立历史，重建上下文时用。"""
+    missing: list[NeutralMessage]
+    """该提供商的原始历史之后、由别的提供商回复过的轮次（中间换过提供商又换回来），要补在原始历史后面。"""
     pending: list[NeutralMessage]
     """上一轮之后没触发回复（被限频或预算挡下）的群消息，拼进本轮 user 消息里，模型才知道期间聊了什么。"""
 
@@ -656,11 +658,21 @@ class ConversationRepo(_Repo):
                 )
             ).all()
 
+            refused = set(
+                (
+                    await s.scalars(
+                        select(Turn.id).where(Turn.conversation_id == conversation_id, Turn.status == "refused")
+                    )
+                ).all()
+            )
+
         neutral: list[NeutralMessage] = []
+        kinds: list[tuple[str, int | None]] = []  # 和 neutral 一一对应：(direction, turn_id)
         last_answered = -1  # 最后一条已经进入过提供商历史的消息（回复，或触发了回复的提问）
         for m, contact in rows:
             if m.direction == "out" and m.turn_id is None:
                 continue  # 系统回复（指令结果、限频和预算提醒）不进上下文
+            kinds.append((m.direction, m.turn_id))
             if m.direction == "summary":
                 neutral.append(NeutralMessage("user", f"[之前对话的摘要]\n{m.content}"))
                 last_answered = len(neutral) - 1
@@ -674,10 +686,15 @@ class ConversationRepo(_Repo):
                 neutral.append(NeutralMessage("user", m.content, speaker=label or None, attachments=attachments))
                 if m.triggered:
                     last_answered = len(neutral) - 1
+        before = neutral[: last_answered + 1]
+        missing = (
+            _missing_turns(before, kinds, {r.turn_id for r in raw_rows}, refused) if raw_rows else []
+        )
         return TurnContext(
             provider_history=[json.loads(r.raw_json) for r in raw_rows],
             next_seq=(raw_rows[-1].seq_no + 1) if raw_rows else 1,
-            neutral_before=neutral[: last_answered + 1],
+            neutral_before=before,
+            missing=missing,
             pending=neutral[last_answered + 1 :],
         )
 
@@ -769,6 +786,32 @@ class ConversationRepo(_Repo):
 
 def _attachment_dict(a: Any) -> dict[str, Any]:
     return {k: getattr(a, k) for k in ("content_type", "filename", "url", "width", "height", "size")}
+
+
+def _missing_turns(
+    before: Sequence[NeutralMessage],
+    kinds: Sequence[tuple[str, int | None]],
+    raw_turns: set[int],
+    refused: set[int],
+) -> list[NeutralMessage]:
+    """原始历史最后覆盖到的那条回复之后，别的提供商答过的轮次（提问 + 回复）。
+
+    同一段里摘要总在最前面，有原始历史就说明已经包含了它。拒答的轮次和最后没有回复的提问不补，和原始历史的规则一样。
+    """
+    start = 0
+    for i, (direction, turn_id) in enumerate(kinds[: len(before)]):
+        if direction == "summary" or (direction == "out" and turn_id in raw_turns):
+            start = i + 1
+    missing: list[NeutralMessage] = []
+    asked: list[NeutralMessage] = []
+    for m, (direction, turn_id) in zip(before[start:], kinds[start : len(before)], strict=True):
+        if direction != "out":
+            asked.append(m)
+            continue
+        if turn_id not in refused:
+            missing += [*asked, m]
+        asked = []
+    return missing
 
 
 # ---------- 用量 ----------
