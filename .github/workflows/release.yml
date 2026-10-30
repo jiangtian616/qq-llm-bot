@@ -97,8 +97,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          generate_release_notes: true
-          files: dist/*
+      # 用 runner 自带的 gh 发布：softprops/action-gh-release 并行上传时会中途退出，只传上一部分文件。
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # 重跑时草稿已经存在，只补传文件。
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            # 生成更新说明的接口偶尔返回 500；失败就先建空说明的草稿，发布前在网页上点「Generate release notes」补上。
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes \
+              || gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes ""
+          fi
+          gh release upload "$TAG" dist/* --clobber
