@@ -1,10 +1,18 @@
 # 三个平台并行构建便携版；推送 v* 标签时把产物发布到 GitHub Releases（草稿，确认后手动发布）。
 # Flutter 和 Nuitka 都不能跨平台编译，每个平台在自己的系统上构建。
+#
+# 编译缓存只在 main 上保存：标签上存的缓存别的标签读不到，只有默认分支的缓存所有标签都能读。
+# 所以核心服务的依赖或打包脚本在 main 上有改动时也构建一次，把缓存预热好，打标签时就能用上。
 name: Release
 
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths:
+      - agent-core/uv.lock
+      - packaging/**
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
@@ -39,7 +47,8 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          # 不缓存 Flutter SDK：直接下载也就一分钟，而每个平台的缓存近 2 GB，会把仓库 10 GB 的缓存额度挤满，冲掉 Nuitka 的缓存。
+          cache: false
 
       - uses: astral-sh/setup-uv@v5
 
@@ -47,8 +56,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # ccache 给 Nuitka 缓存编译结果；macOS 上 Nuitka 会自己下载，Windows 用自带的 clcache。
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev \
-            libayatana-appindicator3-dev libsecret-1-dev patchelf libfuse2
+            libayatana-appindicator3-dev libsecret-1-dev patchelf libfuse2 ccache
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
@@ -59,15 +69,16 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --project agent-core --group build
 
-      # Nuitka 首次要编译约 3500 个 C 模块（大部分来自 anthropic SDK），缓存编译结果，依赖不变时后续构建快很多。
-      - name: Cache Nuitka
-        uses: actions/cache@v4
+      # Nuitka 要编译上千个 C 文件，缓存编译结果（ccache / clcache，都在 Nuitka 的缓存目录里），按文件内容命中。
+      # 取最近一次 main 上保存的缓存；保存时用 run_id 做键，每次都存一份新的，旧的由 GitHub 按 LRU 清掉。
+      - name: Restore Nuitka cache
+        uses: actions/cache/restore@v4
         with:
-          path: |
+          path: &nuitka-cache |
             ~/AppData/Local/Nuitka/Nuitka/Cache
             ~/Library/Caches/Nuitka
             ~/.cache/Nuitka
-          key: nuitka-${{ matrix.name }}-${{ hashFiles('agent-core/uv.lock') }}
+          key: nuitka-${{ matrix.name }}-${{ github.run_id }}
           restore-keys: nuitka-${{ matrix.name }}-
 
       - name: Flutter pub get
@@ -75,6 +86,13 @@ jobs:
 
       - name: Package
         run: uv run --project agent-core --group build python packaging/package.py
+
+      - name: Save Nuitka cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: *nuitka-cache
+          key: nuitka-${{ matrix.name }}-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         with:
