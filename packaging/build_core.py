@@ -75,8 +75,6 @@ def main() -> int:
         "--nofollow-import-to=sqlalchemy.testing",
         str(entry),
     ]
-    if sys.platform == "darwin":
-        cmd.append("--macos-create-app-bundle=no")
     print(" ".join(cmd), flush=True)
     subprocess.run(cmd, check=True, cwd=CORE)
 

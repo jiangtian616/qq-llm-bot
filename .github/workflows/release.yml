@@ -12,6 +12,8 @@ permissions:
 
 env:
   FLUTTER_VERSION: "3.44.8"
+  # Windows runner 的控制台编码是 cp1252，打包脚本输出中文会抛 UnicodeEncodeError。
+  PYTHONUTF8: "1"
 
 jobs:
   build:
