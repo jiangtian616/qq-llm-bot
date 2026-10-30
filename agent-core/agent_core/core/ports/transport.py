@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from agent_core.core.bus import EventBus
 from agent_core.core.lifecycle import ConnectionStateMachine
 from agent_core.core.models import RawEvent
+from agent_core.core.network import DIRECT, Proxy
 from agent_core.core.ports.secrets import SecretReader
 
 
@@ -27,6 +28,8 @@ class TransportContext:
     state: ConnectionStateMachine
     intents: int
     resume: ResumeState = field(default_factory=ResumeState)
+    proxy: Proxy = DIRECT
+    """连 QQ 网关用的代理（network.proxy_for_qq），连接启动时取一次。"""
 
 
 class InboundTransport(abc.ABC):

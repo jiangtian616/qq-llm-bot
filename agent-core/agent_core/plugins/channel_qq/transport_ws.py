@@ -22,6 +22,7 @@ import aiohttp
 from agent_core.core.lifecycle import ConnectionState
 from agent_core.core.models import RawEvent
 from agent_core.core.ports.transport import InboundTransport, ResumeState, TransportContext
+from agent_core.infra.http import client_session, websocket_proxy
 from agent_core.plugins.channel_qq.constants import (
     API_BASE,
     FATAL_CLOSE_CODES,
@@ -74,7 +75,7 @@ class WebSocketTransport(InboundTransport):
         if self._task is not None:
             return
         if self._session is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            self._session = client_session(self.ctx.proxy, timeout=aiohttp.ClientTimeout(total=30))
         if self._tokens is None:
             self._tokens = TokenManager(self.ctx.app_id, self.ctx.secrets, self._session)
         self._stopping = False
@@ -142,7 +143,7 @@ class WebSocketTransport(InboundTransport):
             self._session, self._tokens, api_base=self._api_base
         ).get_gateway_url()
         reached_ready = False
-        async with self._session.ws_connect(url, autoping=True) as ws:
+        async with self._session.ws_connect(url, autoping=True, proxy=websocket_proxy(self.ctx.proxy, url)) as ws:
             self._ws = ws
             hello = await ws.receive_json(timeout=HELLO_TIMEOUT_S)
             if hello.get("op") != OpCode.HELLO:

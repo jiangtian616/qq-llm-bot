@@ -558,3 +558,31 @@ class CoreEvent {
         data: (json['data'] as Map<String, dynamic>?) ?? const {},
       );
 }
+
+/// 代理测试里一个目标的结果：收到任何 HTTP 响应都算连得通。
+class ProxyTestResult {
+  const ProxyTestResult({
+    required this.target,
+    required this.url,
+    required this.ok,
+    required this.elapsedMs,
+    this.status,
+    this.error,
+  });
+
+  final String target;
+  final String url;
+  final bool ok;
+  final int elapsedMs;
+  final int? status;
+  final String? error;
+
+  factory ProxyTestResult.fromJson(Map<String, dynamic> json) => ProxyTestResult(
+        target: json['target'] as String,
+        url: json['url'] as String,
+        ok: json['ok'] as bool,
+        elapsedMs: json['elapsed_ms'] as int,
+        status: json['status'] as int?,
+        error: json['error'] as String?,
+      );
+}

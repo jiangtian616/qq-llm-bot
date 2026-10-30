@@ -14,6 +14,7 @@ from sqlalchemy.orm import aliased
 
 from agent_core.core.clock import now_ms
 from agent_core.core.models import Attachment, InboundMessage, NeutralMessage, RawEvent, Scene
+from agent_core.core.network import DIRECT, Proxy, ProxyMode, normalize_proxy_url
 from agent_core.core.settings import DEFAULTS
 from agent_core.infra.db.models import (
     ChannelAccount,
@@ -143,6 +144,20 @@ class SettingsRepo(_Repo):
             await s.execute(
                 delete(Setting).where(Setting.scope == scope, Setting.scope_id == scope_id, Setting.key == key)
             )
+
+    async def proxy(self, target: str) -> Proxy:
+        """target 是 providers（模型接口）或 qq；这一类没勾选走代理时直连。"""
+        values = {**DEFAULTS, **await self.list("global", 0)}
+        if not values.get(f"network.proxy_for_{target}"):
+            return DIRECT
+        mode = ProxyMode(values.get("network.proxy_mode") or ProxyMode.NONE)
+        if mode != ProxyMode.CUSTOM:
+            return Proxy(mode)
+        # 保存时已经校验过；万一库里的值不对（比如手动改过），按直连处理，不让整个回复失败。
+        try:
+            return Proxy(mode, normalize_proxy_url(values.get("network.proxy_url") or ""))
+        except ValueError:
+            return DIRECT
 
 
 # ---------- 模型配置 ----------

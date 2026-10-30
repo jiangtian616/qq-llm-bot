@@ -7,6 +7,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiohttp>=3.10",
+    "aiohttp-socks>=0.10",
     "aiosqlite>=0.20",
     "alembic>=1.13",
     "anthropic>=1.0",
@@ -15,6 +16,7 @@ dependencies = [
     "keyring>=25",
     "platformdirs>=4.2",
     "pydantic>=2.8",
+    "socksio>=1.0",
     "sqlalchemy[asyncio]>=2.0.30",
     "uvicorn>=0.30",
     "websockets>=13",

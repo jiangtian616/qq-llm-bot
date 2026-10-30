@@ -33,6 +33,7 @@ import aiohttp
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
+from agent_core.infra.http import client_session
 from agent_core.plugins.provider_deepseek.catalog import DEFAULT_MODEL, PRICES, SPEC, is_peak
 
 log = logging.getLogger(__name__)
@@ -257,7 +258,8 @@ class DeepSeekProvider(LLMProvider):
 
     async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._session is None:
-            self._session = aiohttp.ClientSession(
+            self._session = client_session(
+                self.ctx.proxy,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=aiohttp.ClientTimeout(total=self.timeout_s),
             )

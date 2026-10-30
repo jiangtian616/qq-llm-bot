@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
+from agent_core.core.network import DIRECT, Proxy
 from agent_core.core.ports.secrets import SecretReader
 
 
@@ -87,6 +88,8 @@ class ProviderContext:
     model: str | None = None
     system_prompt: str = ""
     params: dict[str, Any] = field(default_factory=dict)
+    proxy: Proxy = DIRECT
+    """调模型接口用的代理（network.proxy_for_providers）。"""
 
 
 class LLMProvider(abc.ABC):

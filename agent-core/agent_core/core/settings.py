@@ -30,6 +30,15 @@ DEFAULTS: dict[str, Any] = {
     "retention.raw_events_days": 30,
     # 核心服务启动后是否自动连接（账号级）
     "connection.auto_connect": False,
+    # 网络代理，只有全局级。proxy_mode：none 直连、system 跟随系统代理、custom 用 proxy_url（http://、socks5:// 等）。
+    # 模型接口和 QQ 分别决定走不走代理；QQ 在国内，一般不用。默认跟随系统代理、只用于模型接口，和 Claude SDK 原来的行为一致
+    "network.proxy_mode": "system",
+    "network.proxy_url": "",
+    "network.proxy_for_providers": True,
+    "network.proxy_for_qq": False,
 }
 
 SCOPES = ("global", "account", "conversation")
+
+# 只能在全局设置的配置项。
+GLOBAL_ONLY_PREFIXES = ("network.",)

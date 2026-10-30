@@ -17,6 +17,7 @@
 - **不丢消息、不重复回复**：消息先写入 SQLite 再处理（收件箱 + 发件箱），按事件 ID 和 `msg_id + msg_seq` 去重；断线后用 Resume 补收，崩溃重启后接着处理。
 - **可插拔**：渠道接入方式（当前 WebSocket，预留 Webhook）和模型提供商（当前 Claude 和 DeepSeek，可在模型配置里切换）都是插件，换实现只需改配置。
 - **多个机器人账号**，机器人行为按「全局 / 账号 / 会话」三层配置。
+- **网络代理**：在设置页选择直连、跟随系统代理或自定义代理（http / https / socks5），模型接口和 QQ 分别决定走不走代理，可以先测试再保存。
 - **密钥安全**：AppSecret 和 API Key 存系统密钥库（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），没有密钥库时退回权限 0600 的文件；不写进数据库、日志和导出文件。
 - **控制费用**：默认用 Claude Haiku 5.5（effort 设为 low）；按用户限频；每日预算用完后暂停回复，仪表盘显示当天用量。
 - **数据自动清理**：聊天记录和原始事件按保留天数（默认 30 天）每天清理一次，同时备份数据库（保留最近 7 份）。
@@ -165,6 +166,7 @@ uv run --no-project --with pillow python packaging/make_icons.py
 | `GET /queue/inbox`、`/queue/outbox`（及 `/{id}` 详情） | 收件箱和发件箱；失败的可以重试，待发送的可以取消 |
 | `GET /system-events`、`GET /stats`、`GET /logs` | 运行事件、收件箱和发件箱统计、服务日志末尾 |
 | `GET /usage/today`、`POST /maintenance/run` | 今天的用量和预算；立即执行一次清理和备份 |
+| `POST /network/test` | 用给定的代理设置试连 Claude、DeepSeek 和 QQ 的接口 |
 
 ### 数据库迁移
 

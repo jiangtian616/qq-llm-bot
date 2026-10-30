@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from agent_core.core.models import (
@@ -13,6 +13,7 @@ from agent_core.core.models import (
     SendErrorClass,
     SendResult,
 )
+from agent_core.core.network import DIRECT, Proxy
 from agent_core.core.ports.secrets import SecretReader
 
 
@@ -21,6 +22,8 @@ class ChannelContext:
     account_id: int
     app_id: str
     secrets: SecretReader
+    proxy: Proxy = field(default=DIRECT)
+    """调 QQ OpenAPI 用的代理（network.proxy_for_qq）。"""
 
 
 class ChannelAdapter(abc.ABC):

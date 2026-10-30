@@ -29,6 +29,10 @@ INCLUDE_PACKAGES = [
     "aiosqlite",
     "alembic",
     "anyio",
+    # 自定义 socks 代理时才导入
+    "aiohttp_socks",
+    "python_socks",
+    "socksio",
 ]
 INCLUDE_MODULES = [
     "sqlalchemy.dialects.sqlite.aiosqlite",

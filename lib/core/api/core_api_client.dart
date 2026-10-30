@@ -85,6 +85,19 @@ class CoreApiClient {
   Future<void> putSetting(String key, Object? value, {String scope = 'global', int scopeId = 0}) =>
       _send('PUT', '/settings', {'scope': scope, 'scope_id': scopeId, 'key': key, 'value': value});
 
+  // ---- 网络代理 ----
+
+  /// 用给定的代理设置（可以还没保存）试连 Claude、DeepSeek 和 QQ；systemProxy 是读到的系统代理，没有时为 null。
+  Future<({List<ProxyTestResult> results, String? systemProxy})> testProxy({required String mode, String url = ''}) async {
+    final json = await _send('POST', '/network/test', {'mode': mode, 'url': url}) as Map<String, dynamic>;
+    return (
+      results: [
+        for (final r in json['results'] as List<dynamic>) ProxyTestResult.fromJson(r as Map<String, dynamic>),
+      ],
+      systemProxy: json['system_proxy'] as String?,
+    );
+  }
+
   // ---- 会话 ----
 
   Future<List<ConversationInfo>> listConversations({int? accountId}) async => [

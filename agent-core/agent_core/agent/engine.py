@@ -245,7 +245,7 @@ class AgentEngine:
         assert turn_id is not None
         await db.conversations.mark_turn(turn_id, status="running", started_at=now_ms())
         try:
-            provider = await self._providers.get(profile)
+            provider = await self._providers.get(profile, await db.settings.proxy("providers"))
             ctx = await db.conversations.load_context(
                 conversation_id=ingested.conversation_id,
                 history_epoch=ingested.history_epoch,
@@ -264,7 +264,9 @@ class AgentEngine:
                 prefix = list(history)
             current = NeutralMessage("user", msg.content, speaker=ingested.sender_label or None, attachments=msg.attachments)
             lines = [*trim_pending(ctx.pending, limits.pending_max_messages, limits.pending_max_chars), current]
-            media = await self._media.collect(lines, vision=vision and provider.capabilities().vision)
+            media = await self._media.collect(
+                lines, vision=vision and provider.capabilities().vision, proxy=await db.settings.proxy("qq")
+            )
             texts = [(t or "（空消息）") if m is current else t for m, t in zip(lines, media.texts, strict=True)]
             text = "\n".join(f"[{m.speaker}] {t}" if m.speaker else t for m, t in zip(lines, texts, strict=True))
             user_message = provider.build_context([NeutralMessage("user", text, images=media.images)])[0]

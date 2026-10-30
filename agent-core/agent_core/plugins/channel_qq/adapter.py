@@ -16,6 +16,7 @@ from agent_core.core.models import (
     SendResult,
 )
 from agent_core.core.ports.channel import ChannelAdapter, ChannelContext
+from agent_core.infra.http import client_session
 from agent_core.plugins.channel_qq.constants import API_BASE, ErrorCode
 from agent_core.plugins.channel_qq.errors import QQApiError
 from agent_core.plugins.channel_qq.event_parser import EventParser
@@ -95,7 +96,7 @@ class QQAdapter(ChannelAdapter):
 
     def _get_sender(self) -> OpenApiSender:
         if self._sender is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            self._session = client_session(self.ctx.proxy, timeout=aiohttp.ClientTimeout(total=30))
             tokens = TokenManager(self.ctx.app_id, self.ctx.secrets, self._session)
             self._sender = OpenApiSender(self._session, tokens, api_base=self._api_base)
         return self._sender

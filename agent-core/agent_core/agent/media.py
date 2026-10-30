@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import aiohttp
 
 from agent_core.core.models import Attachment, ImageData, NeutralMessage
+from agent_core.core.network import DIRECT, Proxy
+from agent_core.infra.http import client_session
 
 log = logging.getLogger(__name__)
 
@@ -77,12 +79,12 @@ class TurnMedia:
 
 
 class MediaFetcher:
-    async def fetch(self, url: str) -> ImageData:
-        """下载一张图片；超时、太大、格式不支持都抛 ValueError。"""
+    async def fetch(self, url: str, proxy: Proxy = DIRECT) -> ImageData:
+        """下载一张图片；超时、太大、格式不支持都抛 ValueError。图片在 QQ 的服务器上，代理跟 QQ 走。"""
         if not url.startswith(("https://", "http://")):
             raise ValueError("不是 http 链接")
         timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT_S)
-        async with aiohttp.ClientSession(timeout=timeout) as s, s.get(url) as resp:
+        async with client_session(proxy, timeout=timeout) as s, s.get(url) as resp:
             resp.raise_for_status()
             data = bytearray()
             async for chunk in resp.content.iter_chunked(64 * 1024):
@@ -94,7 +96,7 @@ class MediaFetcher:
             raise ValueError("不支持的图片格式")
         return ImageData(media_type, bytes(data))
 
-    async def collect(self, lines: Sequence[NeutralMessage], *, vision: bool) -> TurnMedia:
+    async def collect(self, lines: Sequence[NeutralMessage], *, vision: bool, proxy: Proxy = DIRECT) -> TurnMedia:
         """给本轮的每行消息加上附件标记，并下载要交给模型的图片（按顺序编号，最多 MAX_IMAGES_PER_TURN 张）。"""
         wanted: list[tuple[int, int, Attachment]] = []  # (行号, 附件序号, 附件)
         if vision:
@@ -104,7 +106,7 @@ class MediaFetcher:
                         wanted.append((i, j, a))
             # 图片太多时只取最后几张：离提问最近的图最可能是在问的那张。
             wanted = wanted[-MAX_IMAGES_PER_TURN:]
-        results = await asyncio.gather(*(self.fetch(a.url or "") for _, _, a in wanted), return_exceptions=True)
+        results = await asyncio.gather(*(self.fetch(a.url or "", proxy) for _, _, a in wanted), return_exceptions=True)
 
         labels: dict[tuple[int, int], str] = {}
         images: list[ImageData] = []

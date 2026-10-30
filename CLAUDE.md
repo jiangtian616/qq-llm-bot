@@ -63,6 +63,8 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 
 配置项按「会话 → 账号 → 全局 → `DEFAULTS`」的顺序取值（`SettingsRepo.resolve`）。新增配置项时：先加进 `DEFAULTS`（不在里面的键会被控制接口拒绝），再在配置页（`lib/features/config/config_page.dart`）和单独配置对话框（`lib/core/ui/scoped_settings_dialog.dart` 的 `_specs` 和按键列表）里加界面。例外：`budget.daily_usd` 不继承，账号预算和全局预算各算各的，任何一个用完都暂停回复。
 
+网络代理是 `network.*` 配置项，只有全局级（`GLOBAL_ONLY_PREFIXES`），界面在设置页。核心服务里取代理用 `SettingsRepo.proxy("providers" | "qq")`；用 aiohttp 发请求的地方一律通过 `infra/http.py` 的 `client_session(proxy)` 建会话，不要直接 `aiohttp.ClientSession()`。Claude SDK 的 `DefaultAsyncHttpxClient` 不看 `trust_env`，总会挂上系统代理，直连和自定义代理要用 `mounts` 覆盖（见 `provider_claude/provider.py` 的 `_http_client`）。模型接口换了代理会重建提供商实例；QQ 发消息下一次就换，WebSocket 连接要重新启动才换。
+
 ### 桌面端
 
 - 每个页面是 `lib/features/<名字>/` 下的一个功能模块（feature / page / controller / repository），在 `lib/app/feature_registry.dart` 里登记，顺序就是左侧菜单的顺序。repository 通过 `ConnectionStore.api` 调用控制接口。

@@ -28,6 +28,7 @@ from agent_core.control.auth import generate_token
 from agent_core.control.state import ControlState
 from agent_core.core.bus import EventBus
 from agent_core.core.lifecycle import ServiceLifecycle
+from agent_core.core.network import Proxy
 from agent_core.core.ports import LLMProvider, ProviderContext
 from agent_core.infra.db.database import Database
 from agent_core.infra.db.migrate import prune_backups, upgrade_to_head
@@ -120,7 +121,7 @@ async def _serve(
     if released:
         log.info("接着处理上次没做完的 %s 条", released)
 
-    def make_provider(profile: Any) -> LLMProvider:
+    def make_provider(profile: Any, proxy: Proxy) -> LLMProvider:
         cls = registry.load("provider", profile.provider)
         return cls(
             ProviderContext(
@@ -129,6 +130,7 @@ async def _serve(
                 model=profile.model,
                 system_prompt=profile.system_prompt,
                 params=json.loads(profile.params_json or "{}"),
+                proxy=proxy,
             )
         )
 

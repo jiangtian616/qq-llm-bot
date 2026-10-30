@@ -8,6 +8,7 @@
 - 不传 thinking：这几个模型默认就是自适应思考；Haiku 4.5 这类不支持 effort 的模型也不传 effort。
 - stop_reason == "refusal" 时没有正常内容，回一句固定话术；Haiku 没有服务端自动换模型的功能。
 - system prompt 保持固定并开启 prompt caching；SDK 自带 2 次重试（429、5xx、网络错误）。
+- 代理按 ctx.proxy：跟随系统代理时用 SDK 的默认行为；直连和自定义时覆盖掉 SDK 挂上的系统代理（socks 要 socksio）。
 - 历史压缩用官方的按需压缩（beta compact-2026-09-04）：服务端写摘要，返回带签名的 compaction 块，放在新一段历史最前面原样发回；
   之后历史里带着这个块的请求都要走 beta 接口、带同一个 beta 头。
 """
@@ -19,10 +20,12 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
+from httpx2 import AsyncHTTPTransport
 from anthropic.types import Message
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
+from agent_core.core.network import Proxy, ProxyMode
 from agent_core.core.ports.provider import (
     CompactResult,
     LLMProvider,
@@ -98,6 +101,15 @@ def without_thinking(messages: Sequence[Any]) -> list[Any]:
     return out
 
 
+def _http_client(proxy: Proxy) -> DefaultAsyncHttpxClient:
+    # DefaultAsyncHttpxClient 保留 SDK 自己的超时、连接数和 keepalive 设置，但它不看 trust_env，
+    # 总会把系统代理挂到 http:// 和 https:// 上；直连和自定义代理时用同样的键覆盖掉（值为 None 表示直连）。
+    if proxy.mode == ProxyMode.SYSTEM:
+        return DefaultAsyncHttpxClient()
+    target = AsyncHTTPTransport(proxy=proxy.url) if proxy.mode == ProxyMode.CUSTOM and proxy.url else None
+    return DefaultAsyncHttpxClient(mounts={"http://": target, "https://": target, "all://": target})
+
+
 class MissingApiKeyError(RuntimeError):
     pass
 
@@ -127,6 +139,7 @@ class ClaudeProvider(LLMProvider):
                 api_key=api_key,
                 timeout=float(params.get("timeout_s", DEFAULT_TIMEOUT_S)),
                 max_retries=2,
+                http_client=_http_client(ctx.proxy),
             )
         self._client = client
 

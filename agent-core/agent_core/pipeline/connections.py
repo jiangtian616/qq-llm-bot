@@ -27,6 +27,9 @@ from agent_core.pipeline.inbox import reply_deadline_ms
 
 log = logging.getLogger(__name__)
 
+# 代理改了以后，旧的渠道实例等这么久再关：发送请求的超时是 30 秒。
+RETIRE_DELAY_S = 60
+
 
 class AccountNotFoundError(LookupError):
     pass
@@ -58,13 +61,19 @@ class ConnectionManager:
         self._on_inbox = on_inbox
         self._connections: dict[int, _Connection] = {}
         self._channels: dict[int, ChannelAdapter] = {}
+        self._retiring: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
         bus.subscribe("connection.state", self._on_state)
 
     # ---- 渠道（发消息用，不需要连着 WebSocket） ----
 
     async def channel(self, account_id: int) -> ChannelAdapter:
+        proxy = await self._db.settings.proxy("qq")
         adapter = self._channels.get(account_id)
+        if adapter is not None and adapter.ctx.proxy != proxy:
+            # 代理改了：换一个新的渠道实例。旧的可能还有请求在发，等一会儿再关。
+            self._retire(adapter)
+            adapter = None
         if adapter is None:
             account = await self._db.accounts.get(account_id)
             if account is None:
@@ -74,10 +83,22 @@ class ConnectionManager:
                     account_id=account.id,
                     app_id=account.app_id,
                     secrets=self._secrets,
+                    proxy=proxy,
                 )
             )
             self._channels[account_id] = adapter
         return adapter
+
+    def _retire(self, adapter: ChannelAdapter) -> None:
+        async def close_later() -> None:
+            try:
+                await asyncio.sleep(RETIRE_DELAY_S)
+            finally:
+                await adapter.aclose()
+
+        task = asyncio.create_task(close_later())
+        self._retiring.add(task)
+        task.add_done_callback(self._retiring.discard)
 
     async def forget(self, account_id: int) -> None:
         """账号改了 AppSecret 或被删除时调用，下次用到时重新创建。"""
@@ -118,6 +139,7 @@ class ConnectionManager:
                     state=conn.state,
                     intents=account.intents,
                     resume=ResumeState(gateway.session_id, gateway.last_seq) if gateway else ResumeState(),
+                    proxy=await self._db.settings.proxy("qq"),
                 )
             )
             conn.transport = transport
@@ -155,6 +177,9 @@ class ConnectionManager:
         for adapter in self._channels.values():
             await adapter.aclose()
         self._channels.clear()
+        for task in list(self._retiring):
+            task.cancel()
+        await asyncio.gather(*self._retiring, return_exceptions=True)
 
     async def start_auto_connect(self) -> None:
         for account in await self._db.accounts.list():

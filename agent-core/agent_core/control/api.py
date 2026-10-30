@@ -18,7 +18,8 @@ from agent_core.control.state import ControlState
 from agent_core.core.bus import BusEvent
 from agent_core.core.clock import start_of_local_day_ms
 from agent_core.core.ports.provider import ProviderSpec
-from agent_core.core.settings import DEFAULTS, SCOPES
+from agent_core.core.network import ProxyMode, normalize_proxy_url
+from agent_core.core.settings import DEFAULTS, GLOBAL_ONLY_PREFIXES, SCOPES
 
 DEFAULT_INTENTS = 1 << 25  # GROUP_AND_C2C_EVENT：群聊和单聊事件
 
@@ -34,6 +35,24 @@ def _account_secret_key(platform: str, app_id: str) -> str:
 
 def _hint(value: str | None) -> str | None:
     return ("****" + value[-4:]) if value else None
+
+
+def _checked_setting(key: str, value: Any) -> Any:
+    """需要校验的配置项在这里检查，返回要存的值；不合法时报 400。"""
+    try:
+        if key == "network.proxy_mode":
+            if value not in tuple(ProxyMode):
+                raise ValueError(f"代理方式只能是 {'、'.join(ProxyMode)}")
+            return value
+        if key == "network.proxy_url":
+            if not isinstance(value, str):
+                raise ValueError("代理地址要是字符串")
+            return normalize_proxy_url(value) if value.strip() else ""
+        if key in ("network.proxy_for_providers", "network.proxy_for_qq") and not isinstance(value, bool):
+            raise ValueError(f"{key} 要是 true 或 false")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    return value
 
 
 # ---------- 请求体 ----------
@@ -317,11 +336,13 @@ def build_router() -> APIRouter:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"scope 只能是 {', '.join(SCOPES)}")
         if body.key not in DEFAULTS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"没有这个配置项：{body.key}")
+        if body.scope != "global" and body.key.startswith(GLOBAL_ONLY_PREFIXES):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{body.key} 只能在全局设置")
         scope_id = 0 if body.scope == "global" else body.scope_id
         if body.value is None:
             await s.db.settings.remove(body.scope, scope_id, body.key)
         else:
-            await s.db.settings.put(body.scope, scope_id, body.key, body.value)
+            await s.db.settings.put(body.scope, scope_id, body.key, _checked_setting(body.key, body.value))
         await changed(s, "settings")
         return {"scope": body.scope, "scope_id": scope_id, "values": await s.db.settings.list(body.scope, scope_id)}
 
