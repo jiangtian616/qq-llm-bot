@@ -1,6 +1,6 @@
 [project]
 name = "agent-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "qq-llm-bot 核心服务：QQ 官方机器人接入、对话 Agent、本机控制接口"
 readme = "README.md"
 license = "Apache-2.0"
