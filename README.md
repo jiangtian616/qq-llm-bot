@@ -1,8 +1,8 @@
 # qq-llm-bot
 
-在你自己电脑上运行的 **QQ 官方机器人 + 大模型对话 Agent**。机器人通过 QQ 开放平台的官方接口收发群聊和单聊消息，用 Claude（以后可换其他模型）生成回复；桌面端负责管理，支持 **Windows / macOS / Linux**。
+在你自己电脑上运行的 **QQ 官方机器人 + 大模型对话 Agent**。机器人通过 QQ 开放平台的官方接口收发群聊和单聊消息，用 Claude 或 DeepSeek 生成回复；桌面端负责管理，支持 **Windows / macOS / Linux**。
 
-> **当前状态：可用的早期版本。** 可以在桌面端添加机器人、填写 API Key、启动连接，在群聊和单聊里收发消息，查看会话记录、消息队列和日志，有限频、每日预算和自动清理；打包分发还在开发中，见[路线图](#路线图)。
+> **当前状态：可用的早期版本。** 可以在桌面端添加机器人、填写 API Key、启动连接，在群聊和单聊里收发消息，查看会话记录、消息队列和日志，有限频、每日预算和自动清理；三个平台都有便携版。安装版、代码签名和 macOS 公证还没做，见[路线图](#路线图)。
 
 <!-- 截图占位：仪表盘、会话、配置页 -->
 <!-- ![仪表盘](docs/screenshots/dashboard.png) -->
@@ -11,7 +11,8 @@
 
 - **本地部署**：程序从本机主动连出 QQ 的 WebSocket 网关，不需要公网 IP、域名或服务器。
 - **群聊和单聊**：推给机器人的群消息和单聊消息都会回复；群里推哪些（仅 @机器人 / 全部消息）由 QQ 客户端里的群设置决定。
-- **看图**：用户发的图片在本机下载后交给模型（每轮最多 4 张，可按全局 / 账号 / 会话关闭）。
+- **看图**：用户发的图片在本机下载后交给模型（每轮最多 4 张，可按全局 / 账号 / 会话关闭；模型不支持看图时只给文字标记）。
+- **多轮对话**：每个群、每个单聊各有一份历史。历史太长时自动把较早的部分压成摘要，最近几轮原文保留；Claude 用官方的按需压缩。换了模型提供商也能接着聊。
 - **两个独立进程**：Flutter 桌面端 + Python 核心服务。核心服务由桌面端拉起、随桌面端退出；关闭窗口默认缩到托盘，后台继续收发（可在设置里改成直接退出）。核心服务也能单独运行。
 - **不丢消息、不重复回复**：消息先写入 SQLite 再处理（收件箱 + 发件箱），按事件 ID 和 `msg_id + msg_seq` 去重；断线后用 Resume 补收，崩溃重启后接着处理。
 - **可插拔**：渠道接入方式（当前 WebSocket，预留 Webhook）和模型提供商（当前 Claude 和 DeepSeek，可在模型配置里切换）都是插件，换实现只需改配置。
@@ -26,12 +27,12 @@
 ┌──────────── Flutter 桌面端 ────────────┐        ┌──────────────── agent-core（Python） ────────────────┐
 │ 仪表盘 / 会话 / 消息队列 / 配置 / 日志   │  REST  │ control/   FastAPI 控制接口（只监听 127.0.0.1，令牌鉴权）│
 │ CoreProcessManager：拉起 / 停止核心服务  │ ─────► │ pipeline/  收件箱 → 中间件 → 调度 → 发件箱              │
-│ 托盘、窗口、开机自启、单实例            │ ◄───── │ agent/     对话引擎、上下文                             │
-└────────────────────────────────────────┘  事件流 │ plugins/   channel_qq（WebSocket）、provider_claude      │
+│ 托盘、窗口、开机自启、单实例            │ ◄───── │ agent/     对话引擎、上下文、历史压缩、看图             │
+└────────────────────────────────────────┘  事件流 │ plugins/   channel_qq、provider_claude、provider_deepseek│
                                                     │ infra/     SQLite（WAL）+ Alembic、keyring、日志          │
                                                     └──────────────┬──────────────────────┬────────────────────┘
                                                                    │ WebSocket / OpenAPI  │ HTTPS
-                                                              QQ 开放平台             Claude API
+                                                              QQ 开放平台        Claude API / DeepSeek API
 ```
 
 - 桌面端和核心服务是两个进程，通过本机控制接口通信：REST 管理 + WebSocket 事件流，核心服务启动时生成随机令牌写在数据目录里。
@@ -49,11 +50,12 @@
 3. 群聊和单聊事件（`GROUP_AND_C2C_EVENT`）需要单独申请权限。
 4. 群里机器人能收到哪些消息（仅 @ / 全部消息）由 **QQ 客户端里的群设置** 决定，应用只能查询、不能修改；推过来的消息机器人都会回复。
 
-### 2. 准备 Claude API Key
+### 2. 准备模型的 API Key
 
-1. 在 [Claude Console](https://console.anthropic.com/) 创建一个 API Key。建议**为本应用单独建一个工作区和 Key**。
-2. **给这个工作区设置花费上限**，避免群里有人刷屏导致费用失控。
-3. 默认模型是 `claude-haiku-5-5`：每条对话大约 0.0003 美元。
+Claude 和 DeepSeek 二选一，也可以两个都配，按账号或会话选用不同的模型配置。
+
+- **Claude**（默认）：在 [Claude Console](https://console.anthropic.com/) 创建一个 API Key。建议**为本应用单独建一个工作区和 Key，并给这个工作区设置花费上限**，避免群里有人刷屏导致费用失控。默认模型是 `claude-haiku-5-5`，每条对话大约 0.0003 美元。
+- **DeepSeek**：在 [DeepSeek 开放平台](https://platform.deepseek.com/) 创建 API Key，按量从账户余额扣费。`deepseek-flash` 能看图，`deepseek-v4-pro` 推理更强但不能看图；空闲时段半价，界面上按高峰价显示。
 
 ### 3. 运行
 
@@ -68,9 +70,9 @@
 Windows 便携版的程序目录里带一个 `qq-llm-bot-data` 文件夹，数据就存在里面，整个目录可以直接拷走；删掉这个文件夹则改用系统目录。macOS 和 Linux 默认用系统目录，在 `.app` 或 AppImage 旁边新建 `qq-llm-bot-data` 文件夹即可切换到便携模式。升级时用新版本覆盖程序文件即可，数据会保留并自动迁移。
 
 1. 启动桌面端，仪表盘会自动拉起核心服务。
-2. 在「配置」页点「添加机器人」，填写 AppID 和 AppSecret（只存系统密钥库）；在「模型配置」里填写 Claude API Key 并保存。
+2. 在「配置」页点「添加机器人」，填写 AppID 和 AppSecret（只存系统密钥库）；在「模型配置」里选择提供商和模型，填写对应的 API Key 并保存。
 3. 回到仪表盘，在「QQ 连接」里点「启动连接」，状态变成「在线」后，在群里 @机器人 或私聊它试试。
-4. 群聊里发 `/清空` 可以清空这个会话的对话历史，`/帮助` 查看指令。
+4. 在群聊或单聊里发 `/清空` 可以清空这个会话的对话历史，`/帮助` 查看指令。
 
 ## 从源码构建
 
@@ -134,7 +136,7 @@ uv run --no-project --with pillow python packaging/make_icons.py
 | macOS | `~/Library/Application Support/qq-llm-bot` |
 | Linux | `~/.local/share/qq-llm-bot` |
 
-里面有数据库 `agent-core.db`、日志 `logs/`、迁移前的备份 `backups/`，以及核心服务运行时的 `control.json`（端口和随机令牌，macOS / Linux 上权限 0600）。
+里面有数据库 `agent-core.db`、日志 `logs/`、数据库备份 `backups/`（迁移前的备份和每日备份，每日备份保留最近 7 份）、桌面端偏好 `desktop.json`，以及核心服务运行时的 `control.json`（端口和随机令牌，macOS / Linux 上权限 0600）。
 
 数据目录按下面的顺序决定，用第一个命中的：
 
@@ -155,11 +157,12 @@ uv run --no-project --with pillow python packaging/make_icons.py
 | `POST /shutdown` | 平稳停止 |
 | `WS /events` | 事件流：连接状态、消息、日志 |
 | `GET/POST/PATCH/DELETE /accounts` | 机器人账号；AppSecret 只进不出，返回时只给末 4 位 |
-| `POST /accounts/{id}/connection/start`、`/stop` | 启停 QQ 连接 |
-| `GET/POST/PATCH/DELETE /profiles` | 模型配置和 API Key |
-| `GET/PUT /settings` | 分层配置（全局 / 账号 / 会话） |
+| `GET /accounts/{id}/connection`、`POST .../connection/start`、`.../stop` | 查看和启停 QQ 连接 |
+| `GET /providers` | 各模型提供商的模型目录：支持的 effort、默认 effort、输出上限、价格、能不能看图 |
+| `GET/POST/PATCH/DELETE /profiles` | 模型配置和 API Key；保存时按模型目录校验 |
+| `GET/PUT /settings` | 分层配置（全局 / 账号 / 会话），只接受核心服务认识的配置项 |
 | `GET /conversations`、`/conversations/{id}/messages` | 会话列表和聊天记录；另有备注名、清空历史、刷新群状态 |
-| `GET /queue/inbox`、`/queue/outbox` | 收件箱和发件箱；失败的可以重试，待发送的可以取消 |
+| `GET /queue/inbox`、`/queue/outbox`（及 `/{id}` 详情） | 收件箱和发件箱；失败的可以重试，待发送的可以取消 |
 | `GET /system-events`、`GET /stats`、`GET /logs` | 运行事件、收件箱和发件箱统计、服务日志末尾 |
 | `GET /usage/today`、`POST /maintenance/run` | 今天的用量和预算；立即执行一次清理和备份 |
 
@@ -197,9 +200,9 @@ qq-llm-bot/
 │  ├─ agent_core/
 │  │  ├─ app/                 入口、插件注册表、启动配置
 │  │  ├─ core/                统一数据结构、ports/ 接口、EventBus、连接状态机
-│  │  ├─ pipeline/            收件箱、中间件、调度器、发件箱
-│  │  ├─ agent/               对话引擎、提示词、上下文、工具
-│  │  ├─ plugins/             channel_qq/、provider_claude/
+│  │  ├─ pipeline/            收件箱、中间件、调度器、发件箱、每日清理与备份
+│  │  ├─ agent/               对话引擎（上下文、历史压缩）、图片下载、提示词、工具
+│  │  ├─ plugins/             channel_qq/、provider_claude/、provider_deepseek/
 │  │  ├─ control/             FastAPI 控制接口
 │  │  └─ infra/               数据目录、单实例锁、SQLite + Alembic、密钥存储、日志
 │  └─ pyproject.toml          依赖和插件 entry points
@@ -220,6 +223,8 @@ qq-llm-bot/
 - [x] 会话页（聊天记录、备注名、清空历史、群消息接收设置只读查询）、消息队列页（失败重试、取消）、日志页
 - [x] 指令（`/清空`、`/帮助`）、按用户限频、每日预算、数据保留与清理、每日备份
 - [x] 图片消息交给模型（历史里只留文字标记，不重复计费）
+- [x] 模型配置按提供商的模型目录来；新增 DeepSeek 提供商，换提供商后从中立历史重建上下文
+- [x] 历史压缩：超过 token 数或轮数时把较早的部分压成摘要（Claude 用官方按需压缩），最近几轮原文保留
 - [x] 打包与分发：Nuitka 打包核心服务，三个平台的便携版，GitHub Actions 构建并发布草稿 Release
 - [ ] 安装版（Inno Setup / .dmg / .deb）、代码签名和 macOS 公证
 - [ ] 内置开源中文字体，统一三个平台的显示
