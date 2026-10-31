@@ -81,12 +81,18 @@ class TrayService extends GetxService with TrayListener {
     }
   }
 
+  /// 移除托盘图标。退出时要在进程结束前调用：Windows 不会自动清理已退出进程的通知区图标，
+  /// 要等鼠标移上去才消失。
+  Future<void> remove() async {
+    if (!available) return;
+    available = false;
+    trayManager.removeListener(this);
+    await trayManager.destroy();
+  }
+
   @override
   void onClose() {
-    if (available) {
-      trayManager.removeListener(this);
-      trayManager.destroy();
-    }
+    remove();
     super.onClose();
   }
 }

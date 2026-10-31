@@ -2,11 +2,12 @@ import 'package:get/get.dart';
 
 import '../platform/core_process_manager.dart';
 import '../platform/single_instance.dart';
+import '../platform/tray_service.dart';
 import '../platform/window_service.dart';
 
 bool _quitting = false;
 
-/// 退出桌面端：先藏起窗口，再平稳停止核心服务，最后关掉进程。
+/// 退出桌面端：先藏起窗口、移除托盘图标，再平稳停止核心服务，最后关掉进程。
 ///
 /// 托盘菜单「退出」和设置成「退出程序」的关闭按钮都走这里。万一桌面端没走到这一步就没了（被强制结束、
 /// 停止调试），核心服务也会自己发现桌面端退出并停止（见 agent-core 的 --parent-pid）。
@@ -15,6 +16,12 @@ Future<void> quitApp(SingleInstance instance) async {
   _quitting = true;
   final window = Get.find<WindowService>();
   await window.hide();
+  // 托盘图标跟窗口一起去掉，不用等核心服务停完。
+  try {
+    await Get.find<TrayService>().remove();
+  } on Object {
+    // 图标移不掉也照样退出。
+  }
   try {
     await Get.find<CoreProcessManager>().stop();
   } on Object {
