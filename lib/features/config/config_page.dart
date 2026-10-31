@@ -888,8 +888,8 @@ class _BehaviorSection extends GetView<ConfigController> {
             const Divider(height: 1),
             _SettingRow(
               title: '图文回复',
-              subtitle: '让模型用回复工具交出结构化的回复，文字里的网址会去掉（QQ 不允许发链接）；'
-                  '模型配置不支持工具时（比如 DeepSeek）不生效',
+              subtitle: '模型按需要回复文字、图片或图文卡片；图片和卡片的链接只能来自搜索结果、它读过的网页或用户消息，'
+                  '文字里的网址会去掉（QQ 不允许发链接）',
               trailing: Switch(
                 value: (s['reply.rich_media.enabled'] as bool?) ?? true,
                 onChanged: (v) => _report(controller.setSetting('reply.rich_media.enabled', v)),
@@ -898,8 +898,9 @@ class _BehaviorSection extends GetView<ConfigController> {
             const Divider(height: 1),
             _SettingRow(
               title: '联网搜索',
-              subtitle: '模型觉得需要最新信息时自己去搜，用的是提供商自带的搜索（Claude 每 1000 次 10 美元，'
-                  '另按搜索结果的 token 计费，都算进每日预算）；每轮最多搜几次在下面「限频、预算」里设',
+              subtitle: '模型觉得需要最新信息时自己去搜：Claude 用自带的搜索（每 1000 次 10 美元），'
+                  'DeepSeek 用它的 Search 接口（每 1000 次 5 元），搜索结果另按 token 计费，都算进每日预算；'
+                  '每轮最多搜几次在下面「限频、预算」里设',
               trailing: Switch(
                 value: (s['tools.web_search.enabled'] as bool?) ?? false,
                 onChanged: (v) => _report(controller.setSetting('tools.web_search.enabled', v)),

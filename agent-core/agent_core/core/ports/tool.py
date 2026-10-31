@@ -21,6 +21,11 @@ from typing import Any
 class ToolResult:
     content: str
     is_error: bool = False
+    links: tuple[str, ...] = ()
+    """结果里出现的链接（搜索结果的网页、网页里的图片）：之后回复里的图片、卡片只能用出现过的链接。"""
+    cost_usd: float = 0.0
+    """调用外部接口的费用（如 DeepSeek 搜索按次计费），记在这一轮上。"""
+    search_requests: int = 0
 
 
 class Tool:
@@ -32,8 +37,16 @@ class Tool:
     terminal: bool = False
     """调用它就结束这一轮，参数交给引擎，不执行 run()。"""
 
-    async def run(self, arguments: dict[str, Any]) -> ToolResult:
+    async def run(self, arguments: dict[str, Any], links: frozenset[str]) -> ToolResult:
+        """links 是这一轮到目前为止出现过的链接（用户消息、搜索结果、工具结果）。"""
         raise NotImplementedError(f"{self.name} 不在本地执行")
+
+    def validate(self, arguments: dict[str, Any], links: frozenset[str]) -> str | None:
+        """terminal 工具的参数校验：不合规时返回原因，工具循环把它作为出错结果交回模型，让模型重来一次。
+
+        links 是这一轮到目前为止出现过的链接（用户消息、搜索结果、工具结果）。
+        """
+        return None
 
     def definition(self) -> dict[str, Any]:
         return {
@@ -61,6 +74,8 @@ class Toolset:
     local: tuple[Tool, ...] = ()
     max_rounds: int = 4
     """最多执行几轮工具调用（服务端工具暂停后接着请求也算一轮）。"""
+    seed_links: frozenset[str] = frozenset()
+    """本轮一开始就可信的链接（用户消息里的链接和附件），不算进指纹。"""
 
     def __bool__(self) -> bool:
         return bool(self.server or self.local)

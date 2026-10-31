@@ -16,6 +16,8 @@
   同时补上它的工具结果：每个工具调用都要有结果，历史才能接着用，压缩请求也拒绝以没有结果的工具调用结尾。
   服务端工具跑太久会返回 pause_turn，原样发回去就接着做。本轮循环里的思考块原样带回，之前各轮的照旧去掉。
 - 没调用回复工具时，回复取最后一次响应里最后一个工具块之后的文字：搜索前那句「我查一下」不发出去。
+- 记下这一轮出现过的链接（用户消息、搜索结果、本地工具结果）：回复里的图片、卡片只能用这些。
+  回复工具的参数校验不过时，把原因作为出错结果交回模型重来一次，再不合规就照收，由回复编排丢掉不合规的段。
 """
 
 from __future__ import annotations
@@ -175,12 +177,21 @@ def _final_text(content: Sequence[Any]) -> str:
     return "".join(texts)
 
 
-async def _run_tool(tools: Toolset, call: Any) -> ToolResult:
+def _search_result_links(content: Sequence[Any]) -> list[str]:
+    """服务端搜索结果里的网页地址。"""
+    links: list[str] = []
+    for block in content:
+        if block.type == "web_search_tool_result" and isinstance(block.content, list):
+            links += [r.url for r in block.content if getattr(r, "url", None)]
+    return links
+
+
+async def _run_tool(tools: Toolset, call: Any, links: frozenset[str]) -> ToolResult:
     tool = tools.find(call.name)
     if tool is None:
         return ToolResult(f"没有这个工具：{call.name}", is_error=True)
     try:
-        return await tool.run(call.input if isinstance(call.input, dict) else {})
+        return await tool.run(call.input if isinstance(call.input, dict) else {}, links)
     except Exception as e:
         log.exception("工具 %s 执行失败", call.name)
         return ToolResult(f"工具执行失败：{type(e).__name__}: {e}", is_error=True)
@@ -282,12 +293,15 @@ class ClaudeProvider(LLMProvider):
         turn_start = len(convo) - 1
         produced: list[Any] = []
         usage, cost, searches, rounds = Usage(), 0.0, 0, 0
+        links = set(tools.seed_links)
+        rejected = False  # 回复校验不过已经交回模型重来过一次
         while True:
             response = await self._create(convo, tools, keep_thinking_from=turn_start)
             # 原样保存完整 content，下一轮直接追加进历史，不改写。
             raw_assistant = {"role": "assistant", "content": [block.to_dict() for block in response.content]}
             convo.append(raw_assistant)
             produced.append(raw_assistant)
+            links.update(_search_result_links(response.content))
             step = _usage(response)
             usage = _add(usage, step)
             step_searches = _web_searches(response)
@@ -301,6 +315,7 @@ class ClaudeProvider(LLMProvider):
                 cost_usd=cost,
                 search_requests=searches,
                 tool_rounds=rounds,
+                links=frozenset(links),
                 context_tokens=step.input_tokens + step.cache_read_tokens + step.cache_write_tokens + step.output_tokens,
             )
             if response.stop_reason == "refusal":
@@ -316,14 +331,28 @@ class ClaudeProvider(LLMProvider):
 
             terminal = next((c for c in calls if (t := tools.find(c.name)) is not None and t.terminal), None)
             if terminal is not None:
-                # 回复工具：参数就是回复，不再请求模型。所有工具调用都要有结果，历史才能接着用（压缩也要求这样）。
-                produced.append(_tool_results(calls, {terminal.id: ToolResult(REPLY_ACK)}, SKIPPED_BY_REPLY))
-                parts = terminal.input.get("parts") if isinstance(terminal.input, dict) else None
-                return result(
-                    text=_final_text(response.content),
-                    stop_reason=response.stop_reason,
-                    reply_parts=parts if isinstance(parts, list) else [],
+                arguments = terminal.input if isinstance(terminal.input, dict) else {}
+                tool = tools.find(terminal.name)
+                problem = tool.validate(arguments, frozenset(links)) if tool is not None else None
+                if problem is None or rejected or rounds >= tools.max_rounds:
+                    # 回复工具：参数就是回复，不再请求模型。所有工具调用都要有结果，历史才能接着用（压缩也要求这样）。
+                    # 重来过一次还不合规的段，由回复编排丢掉。
+                    produced.append(_tool_results(calls, {terminal.id: ToolResult(REPLY_ACK)}, SKIPPED_BY_REPLY))
+                    parts = arguments.get("parts")
+                    return result(
+                        text=_final_text(response.content),
+                        stop_reason=response.stop_reason,
+                        reply_parts=parts if isinstance(parts, list) else [],
+                    )
+                # 链接不可信：把原因交回模型，让它去拿真实的链接或者去掉那几段，只给一次机会。
+                rejected = True
+                rounds += 1
+                tool_message = _tool_results(
+                    calls, {terminal.id: ToolResult(problem, is_error=True)}, SKIPPED_BY_REPLY
                 )
+                convo.append(tool_message)
+                produced.append(tool_message)
+                continue
             if rounds >= tools.max_rounds:
                 log.warning("工具调用超过 %s 轮，结束这一轮", tools.max_rounds)
                 if calls:
@@ -332,7 +361,12 @@ class ClaudeProvider(LLMProvider):
             rounds += 1
             if calls:
                 # 服务端工具暂停（pause_turn）时没有本地工具调用，原样发回去它就接着做。
-                outcomes = await asyncio.gather(*(_run_tool(tools, c) for c in calls))
+                seen = frozenset(links)
+                outcomes = await asyncio.gather(*(_run_tool(tools, c, seen) for c in calls))
+                for outcome in outcomes:
+                    links.update(outcome.links)
+                    cost += outcome.cost_usd
+                    searches += outcome.search_requests
                 tool_message = _tool_results(calls, {c.id: r for c, r in zip(calls, outcomes, strict=True)}, "")
                 convo.append(tool_message)
                 produced.append(tool_message)

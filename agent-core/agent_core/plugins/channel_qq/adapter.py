@@ -1,12 +1,13 @@
-"""QQAdapter：渠道插槽的 QQ 实现。"""
+"""QQAdapter：渠道插槽的 QQ 实现。
+
+图片（msg_type=7）先上传成 file_info 再发；图文卡片（msg_type=8）直接带 card 发，发不出去（比如没有权限）就退回成文字。
+"""
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import ipaddress
+import logging
 from typing import Any
-from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
@@ -20,12 +21,14 @@ from agent_core.core.models import (
     SendResult,
 )
 from agent_core.core.ports.channel import ChannelAdapter, ChannelContext
-from agent_core.infra.http import client_session
+from agent_core.infra.http import FetchError, client_session, fetch_public
 from agent_core.plugins.channel_qq.constants import API_BASE, ErrorCode, FileType
 from agent_core.plugins.channel_qq.errors import MediaUnavailableError, QQApiError
 from agent_core.plugins.channel_qq.event_parser import EventParser
 from agent_core.plugins.channel_qq.openapi_sender import OpenApiSender
 from agent_core.plugins.channel_qq.token_manager import TokenManager
+
+log = logging.getLogger(__name__)
 
 _ALREADY_SENT = {ErrorCode.DUPLICATE_MSG_SEQ}
 _FATAL = {ErrorCode.MESSAGE_TOO_LONG, ErrorCode.MUTED, ErrorCode.UNSUPPORTED_FILE_FORMAT, ErrorCode.FILE_TOO_LARGE}
@@ -37,11 +40,10 @@ _REPLY_WINDOWS = {
     Scene.C2C: ReplyWindow(seconds=60 * 60, max_replies=4),
 }
 
+TEXT_MSG_TYPE = 0
+CARD_MSG_TYPE = 8
 # 平台下载不到图片时由本机下载后直接上传数据；直传上限 5 MB，按 base64 之后算。
 MAX_UPLOAD_BYTES = 3_750_000
-MAX_REDIRECTS = 5
-# Clash、Surge 等代理的 TUN 模式会把域名解析到这个网段（fake-ip），实际流量由代理转发到公网。
-_FAKE_IP = ipaddress.ip_network("198.18.0.0/15")
 _IMAGE_EXT = ((b"\xff\xd8\xff", "jpg"), (b"\x89PNG\r\n\x1a\n", "png"), (b"GIF8", "gif"))
 
 
@@ -63,7 +65,9 @@ class QQAdapter(ChannelAdapter):
 
     async def send(self, message: OutboundMessage) -> SendResult:
         payload: dict[str, Any] = {"msg_type": message.msg_type, "msg_seq": message.msg_seq}
-        if message.content or not message.image_url:
+        if message.card:
+            payload["card"] = {"type": "tuwen", "content": message.card}
+        elif message.content or not message.image_url:
             payload["content"] = message.content
         if message.image_url:
             file_info = await self._upload_image(message.scene, message.target_openid, message.image_url)
@@ -73,11 +77,17 @@ class QQAdapter(ChannelAdapter):
         elif message.reply_to_event_id:
             payload["event_id"] = message.reply_to_event_id
         payload.update(message.extra)
-        sender = self._get_sender()
-        if message.scene == Scene.GROUP:
-            body = await sender.send_group_message(message.target_openid, payload)
-        else:
-            body = await sender.send_c2c_message(message.target_openid, payload)
+        try:
+            body = await self._post_message(message, payload)
+        except QQApiError as e:
+            # 卡片发不出去（没有权限、字段不合规……）就退回成文字，用同一个 msg_seq；重复、过期、禁言这些照常处理。
+            if not message.card or self.classify_send_error(e) != SendErrorClass.FATAL or e.code in _FATAL:
+                raise
+            log.warning("图文卡片发送失败，改发文字：%s", e)
+            payload.pop("card")
+            payload["msg_type"] = TEXT_MSG_TYPE
+            payload["content"] = card_text(message.card)
+            body = await self._post_message(message, payload)
         return SendResult(
             platform_message_id=body.get("id"),
             platform_ts=body.get("timestamp"),
@@ -112,6 +122,12 @@ class QQAdapter(ChannelAdapter):
             self._session = None
             self._sender = None
 
+    async def _post_message(self, message: OutboundMessage, payload: dict[str, Any]) -> dict[str, Any]:
+        sender = self._get_sender()
+        if message.scene == Scene.GROUP:
+            return await sender.send_group_message(message.target_openid, payload)
+        return await sender.send_c2c_message(message.target_openid, payload)
+
     async def _upload_image(self, scene: Scene, openid: str, url: str) -> str:
         """先让平台按链接下载；平台下载不到（防盗链、访问不了的站点等）再本机下载后上传数据。
 
@@ -137,27 +153,15 @@ class QQAdapter(ChannelAdapter):
         return body["file_info"]
 
     async def _download_image(self, url: str) -> tuple[bytes, str]:
-        """链接是模型给的，可能被群友诱导指向内网，所以每一跳都检查目标地址，只下载公网上的图片。"""
         assert self._session is not None
-        for _ in range(MAX_REDIRECTS + 1):
-            await _ensure_public(url)
-            async with self._session.get(url, allow_redirects=False) as resp:
-                location = resp.headers.get("Location")
-                if resp.status in (301, 302, 303, 307, 308) and location:
-                    url = urljoin(url, location)
-                    continue
-                if resp.status >= 400:
-                    raise MediaUnavailableError(f"图片链接打不开（HTTP {resp.status}）")
-                data = bytearray()
-                async for chunk in resp.content.iter_chunked(64 * 1024):
-                    data += chunk
-                    if len(data) > MAX_UPLOAD_BYTES:
-                        raise MediaUnavailableError("图片太大")
-            for magic, ext in _IMAGE_EXT:
-                if data.startswith(magic):
-                    return bytes(data), ext
-            raise MediaUnavailableError("不是 png / jpg / gif 图片")
-        raise MediaUnavailableError("图片链接跳转次数太多")
+        try:
+            fetched = await fetch_public(self._session, url, max_bytes=MAX_UPLOAD_BYTES)
+        except FetchError as e:
+            raise MediaUnavailableError(f"图片{e}") from e
+        for magic, ext in _IMAGE_EXT:
+            if fetched.data.startswith(magic):
+                return fetched.data, ext
+        raise MediaUnavailableError("不是 png / jpg / gif 图片")
 
     def _get_sender(self) -> OpenApiSender:
         if self._sender is None:
@@ -167,16 +171,7 @@ class QQAdapter(ChannelAdapter):
         return self._sender
 
 
-async def _ensure_public(url: str) -> None:
-    parts = urlsplit(url)
-    host = parts.hostname
-    if parts.scheme not in ("http", "https") or not host:
-        raise MediaUnavailableError("不是 http 链接")
-    try:
-        infos = await asyncio.get_running_loop().getaddrinfo(host, parts.port)
-    except OSError as e:
-        raise MediaUnavailableError(f"图片链接的域名解析失败：{host}") from e
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
-        if not address.is_global and address not in _FAKE_IP:
-            raise MediaUnavailableError(f"图片链接指向内网地址：{host}")
+def card_text(card: dict[str, Any]) -> str:
+    """卡片发不出去时改发的文字：标题和摘要，不带网址（QQ 不允许文字消息带链接）。"""
+    title, description = card.get("title") or "", card.get("description") or ""
+    return f"{title}：{description}" if description and description != title else title

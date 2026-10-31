@@ -9,8 +9,12 @@
 
 要点：
 - 默认 deepseek-flash，effort 设为 low。effort 为 none 时传 thinking.type=disabled（不思考），其余传 thinking.type=enabled 和 reasoning_effort。
-- 历史只追加、不改写：assistant 回复原样保存接口返回的 message（包括 reasoning_content）。
-  发请求时去掉 reasoning_content：按官方文档（guides/thinking_mode），不带 tools 的请求不需要回传思维链，传了也会被忽略。
+- 历史只追加、不改写：assistant 回复原样保存接口返回的 message（包括 reasoning_content、tool_calls）。
+  不带 tools 的请求去掉 reasoning_content（官方说不用回传）；带 tools 的请求必须回传历史里全部的 reasoning_content，
+  否则返回 400（guides/thinking_mode）。
+- 工具调用（function calling）：本地工具在这里执行，结果作为 tool 消息交回去接着请求；模型调用回复工具就结束，
+  同时补上它的 tool 消息。参数用 strict 模式，要走 /beta 地址，/beta 请求失败就退回普通地址。
+  联网搜索没有服务端工具，search_tool() 给出本地的 web_search，背后是 Search 接口（/v1/tools/search，按次计费）。
 - 中立历史里可能有连续的同角色消息（比如摘要后面紧跟提问），Chat Completions 不会自动合并，发请求前合并成一条。
 - deepseek-v4-pro 不能看图，目录里标为 vision=False，引擎只给它「[图片]」文字标记。
 - 上下文缓存自动开启，按前缀匹配；system prompt 保持固定，作为第一条 system 消息发送。
@@ -27,13 +31,14 @@ import json
 import logging
 import os
 from collections.abc import Sequence
+from functools import partial
 from typing import Any
 
 import aiohttp
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
-from agent_core.core.ports.tool import Toolset
+from agent_core.core.ports.tool import Tool, Toolset, ToolResult
 from agent_core.infra.http import client_session
 from agent_core.plugins.provider_deepseek.catalog import DEFAULT_MODEL, PRICES, SPEC, is_peak
 
@@ -62,6 +67,14 @@ _STATUS_TEXT = {
     500: "DeepSeek 服务器故障",
     503: "DeepSeek 服务器繁忙",
 }
+REPLY_ACK = "已发送给用户。"
+SKIPPED_BY_REPLY = "没有执行：这一轮已经回复了。"
+SKIPPED_BY_LIMIT = "没有执行：这一轮的工具调用次数到上限了。"
+SEARCH_QUERY_MAX = 128
+SEARCH_COUNT = 5
+SEARCH_SUMMARY_MAX = 600
+# Search 接口每 1000 次成功请求 5 元，按 1 美元约 7.2 元折算。
+SEARCH_PRICE_USD = 0.005 / 7.2
 # 推理资源不足、生成被中断：没有正文时重试一次，用量照样累计。
 _INTERRUPTED = {"insufficient_system_resource", "aborted"}
 
@@ -118,23 +131,40 @@ def _parts(content: Any) -> list[dict[str, Any]]:
     return content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
 
 
-def to_wire(system_prompt: str, messages: Sequence[Any]) -> list[dict[str, Any]]:
-    """把历史变成请求里的 messages：加上 system，去掉 reasoning_content，合并连续的同角色消息。"""
+def to_wire(system_prompt: str, messages: Sequence[Any], *, with_tools: bool = False) -> list[dict[str, Any]]:
+    """把历史变成请求里的 messages：加上 system，合并连续的同角色消息。
+
+    不带 tools 的请求去掉 reasoning_content（官方说不用回传）；带 tools 的请求必须原样回传历史里全部的 reasoning_content，
+    否则返回 400。带工具调用的 assistant 消息、tool 消息原样保留，不合并（合并会丢掉 tool_calls）。
+    """
     out: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}] if system_prompt else []
     for m in messages:
         role = m.get("role")
+        if role == "tool":
+            out.append({"role": "tool", "tool_call_id": m.get("tool_call_id"), "content": m.get("content") or ""})
+            continue
         content = m.get("content")
-        if role == "assistant" and not content:
+        calls = m.get("tool_calls") if role == "assistant" else None
+        if role == "assistant" and not content and not calls:
             content = EMPTY_ASSISTANT_TEXT
-        if out and out[-1]["role"] == role and role in ("user", "assistant"):
-            prev = out[-1]["content"]
-            if isinstance(prev, str) and isinstance(content, str):
-                merged: Any = f"{prev}\n{content}"
+        wire: dict[str, Any] = {"role": role, "content": content}
+        if calls:
+            wire["tool_calls"] = calls
+        if with_tools and role == "assistant" and m.get("reasoning_content") is not None:
+            wire["reasoning_content"] = m["reasoning_content"]
+        prev = out[-1] if out else None
+        mergeable = prev is not None and prev["role"] == role and (
+            role == "user" or (role == "assistant" and not calls and not prev.get("tool_calls") and not with_tools)
+        )
+        if mergeable:
+            assert prev is not None
+            if isinstance(prev["content"], str) and isinstance(content, str):
+                merged: Any = f"{prev['content']}\n{content}"
             else:
-                merged = [*_parts(prev), *_parts(content)]
-            out[-1] = {"role": role, "content": merged}
+                merged = [*_parts(prev["content"]), *_parts(content)]
+            out[-1] = {**prev, "content": merged}
         else:
-            out.append({"role": role, "content": content})
+            out.append(wire)
     return out
 
 
@@ -163,9 +193,14 @@ class DeepSeekProvider(LLMProvider):
             if not self._api_key:
                 raise MissingApiKeyError(f"密钥库里没有 DeepSeek API Key（{ctx.secret_ref}）")
         self._session = session
+        self._strict = True
+        """工具参数用 strict 模式（走 /beta）；/beta 请求失败过一次就不再用。"""
 
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(tools=False, vision=self.spec is not None and self.spec.vision, compaction=False)
+        return ProviderCapabilities(tools=True, vision=self.spec is not None and self.spec.vision, compaction=False)
+
+    def search_tool(self, max_uses: int) -> Tool | None:
+        return DeepSeekSearchTool(self, max_uses)
 
     def build_context(self, history: Sequence[NeutralMessage]) -> list[dict[str, Any]]:
         # 群聊多人共用一份历史，user 消息前加上发言人标识，模型才分得清谁在说话。
@@ -185,13 +220,15 @@ class DeepSeekProvider(LLMProvider):
             messages.append({"role": m.role, "content": content})
         return messages
 
-    def _body(self, messages: Sequence[Any]) -> dict[str, Any]:
+    def _body(self, messages: Sequence[Any], tools: Toolset, *, strict: bool) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": to_wire(self.ctx.system_prompt, messages),
+            "messages": to_wire(self.ctx.system_prompt, messages, with_tools=bool(tools.local)),
             "max_tokens": self.max_tokens,
             "stream": False,
         }
+        if tools.local:
+            body["tools"] = [_function(t, strict=strict) for t in tools.local]
         if self.effort == "none":
             body["thinking"] = {"type": "disabled"}
         elif self.effort is not None:
@@ -200,46 +237,113 @@ class DeepSeekProvider(LLMProvider):
         return body
 
     async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
-        # 还没接 function calling（capabilities().tools 为假），引擎不会给本地工具，也没有服务端工具。
-        data, usage = await self._complete(self._body(messages))
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        finish = choice.get("finish_reason")
-        # 原样保存接口返回的 message，下一轮直接追加进历史，不改写。
-        raw_assistant = {**message, "role": "assistant"}
-        cost = estimate_cost(self.model, usage)
-        model = data.get("model") or self.model
-        context_tokens = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.output_tokens
-        if finish == "content_filter":
-            # 输出被内容过滤截掉了，没有能用的正文。
-            return GenerateResult(
-                text=self.refusal_reply,
-                stop_reason=finish,
+        tools = tools or Toolset()
+        convo = list(messages)
+        produced: list[Any] = []
+        usage, cost, searches, rounds = Usage(), 0.0, 0, 0
+        links = set(tools.seed_links)
+        rejected = False  # 回复校验不过已经交回模型重来过一次
+        while True:
+            data, step = await self._chat(convo, tools)
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            finish = choice.get("finish_reason")
+            # 原样保存接口返回的 message（包括 reasoning_content、tool_calls），之后追加进历史，不改写。
+            raw_assistant = {**message, "role": "assistant"}
+            convo.append(raw_assistant)
+            produced.append(raw_assistant)
+            usage = _add(usage, step)
+            cost += estimate_cost(self.model, step)
+            result = partial(
+                GenerateResult,
                 usage=usage,
-                model=model,
-                refused=True,
-                raw_messages=[raw_assistant],
+                model=data.get("model") or self.model,
+                raw_messages=produced,
                 cost_usd=cost,
-                context_tokens=context_tokens,
+                search_requests=searches,
+                tool_rounds=rounds,
+                links=frozenset(links),
+                context_tokens=step.input_tokens + step.cache_read_tokens + step.cache_write_tokens + step.output_tokens,
             )
-        return GenerateResult(
-            text=message.get("content") or "",
-            stop_reason=finish,
-            usage=usage,
-            model=model,
-            raw_messages=[raw_assistant],
-            cost_usd=cost,
-            context_tokens=context_tokens,
-        )
+            if finish == "content_filter":
+                # 输出被内容过滤截掉了，没有能用的正文。
+                return result(text=self.refusal_reply, stop_reason=finish, refused=True)
+            calls = [c for c in message.get("tool_calls") or [] if isinstance(c, dict)]
+            if not calls:
+                return result(text=message.get("content") or "", stop_reason=finish)
 
-    async def _complete(self, body: dict[str, Any]) -> tuple[dict[str, Any], Usage]:
+            terminal = next((c for c in calls if (t := tools.find(_call_name(c))) is not None and t.terminal), None)
+            if terminal is not None:
+                arguments = _call_arguments(terminal)
+                tool = tools.find(_call_name(terminal))
+                problem = tool.validate(arguments, frozenset(links)) if tool is not None else None
+                if problem is None or rejected or rounds >= tools.max_rounds:
+                    # 回复工具：参数就是回复，不再请求模型；每个工具调用都要有对应的 tool 消息，历史才能接着用。
+                    produced += _tool_messages(calls, {terminal["id"]: ToolResult(REPLY_ACK)}, SKIPPED_BY_REPLY)
+                    parts = arguments.get("parts")
+                    return result(
+                        text=message.get("content") or "",
+                        stop_reason=finish,
+                        reply_parts=parts if isinstance(parts, list) else [],
+                    )
+                rejected = True
+                rounds += 1
+                replies = _tool_messages(calls, {terminal["id"]: ToolResult(problem, is_error=True)}, SKIPPED_BY_REPLY)
+                convo += replies
+                produced += replies
+                continue
+            if rounds >= tools.max_rounds:
+                log.warning("工具调用超过 %s 轮，结束这一轮", tools.max_rounds)
+                produced += _tool_messages(calls, {}, SKIPPED_BY_LIMIT)
+                return result(text=message.get("content") or "", stop_reason="tool_rounds_exceeded")
+            rounds += 1
+            seen = frozenset(links)
+            outcomes = await asyncio.gather(*(_run_tool(tools, c, seen) for c in calls))
+            for outcome in outcomes:
+                links.update(outcome.links)
+                cost += outcome.cost_usd
+                searches += outcome.search_requests
+            replies = _tool_messages(calls, {c["id"]: r for c, r in zip(calls, outcomes, strict=True)}, "")
+            convo += replies
+            produced += replies
+
+    async def _chat(self, messages: Sequence[Any], tools: Toolset) -> tuple[dict[str, Any], Usage]:
+        """strict 模式要走 /beta 地址（Beta 功能）；/beta 请求失败（不是限流、服务器故障）就关掉 strict 改走普通地址，之后都不再用。"""
+        strict = self._strict and any(t.strict for t in tools.local)
+        if not strict:
+            return await self._complete(self._body(messages, tools, strict=False))
+        try:
+            return await self._complete(self._body(messages, tools, strict=True), beta=True)
+        except DeepSeekError as e:
+            if e.retryable or e.status in (401, 402):
+                raise
+            log.warning("DeepSeek strict 模式（/beta）请求失败，改用普通地址：%s", e)
+            self._strict = False
+            return await self._complete(self._body(messages, tools, strict=False))
+
+    async def search(self, query: str) -> list[dict[str, Any]]:
+        """调 DeepSeek 的 Search 接口（POST /v1/tools/search）。"""
+        session = self._ensure_session()
+        body = {"query": query[:SEARCH_QUERY_MAX], "count": SEARCH_COUNT}
+        async with session.post(f"{self.base_url}/v1/tools/search", json=body) as resp:
+            raw = await resp.read()
+            if resp.status != 200:
+                raise DeepSeekError(
+                    f"{_STATUS_TEXT.get(resp.status, 'DeepSeek 搜索出错')}（HTTP {resp.status}）：{_error_message(raw)}",
+                    status=resp.status,
+                    retryable=resp.status in _RETRYABLE_STATUS,
+                )
+        results = json.loads(raw).get("results")
+        return [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+
+    async def _complete(self, body: dict[str, Any], *, beta: bool = False) -> tuple[dict[str, Any], Usage]:
         """发请求并按错误分类重试；返回响应和所有尝试累计的用量。"""
         carried = Usage()
         for attempt in range(MAX_RETRIES + 1):
             last = attempt == MAX_RETRIES
             delay = RETRY_BACKOFF_S * 2**attempt
             try:
-                data = await self._post(body)
+                data = await self._post(body, beta=beta)
             except DeepSeekError as e:
                 if not e.retryable or last:
                     raise
@@ -253,7 +357,10 @@ class DeepSeekProvider(LLMProvider):
             else:
                 usage = _add(carried, parse_usage(data.get("usage")))
                 choice = (data.get("choices") or [{}])[0]
-                interrupted = choice.get("finish_reason") in _INTERRUPTED and not (choice.get("message") or {}).get("content")
+                message = choice.get("message") or {}
+                interrupted = choice.get("finish_reason") in _INTERRUPTED and not (
+                    message.get("content") or message.get("tool_calls")
+                )
                 if not interrupted or last:
                     return data, usage
                 carried = usage
@@ -261,14 +368,18 @@ class DeepSeekProvider(LLMProvider):
             await asyncio.sleep(delay)
         raise AssertionError("unreachable")
 
-    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None:
             self._session = client_session(
                 self.ctx.proxy,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=aiohttp.ClientTimeout(total=self.timeout_s),
             )
-        async with self._session.post(f"{self.base_url}/chat/completions", json=body) as resp:
+        return self._session
+
+    async def _post(self, body: dict[str, Any], *, beta: bool = False) -> dict[str, Any]:
+        url = f"{self.base_url}/beta/chat/completions" if beta else f"{self.base_url}/chat/completions"
+        async with self._ensure_session().post(url, json=body) as resp:
             # 非流式请求在开始推理前会先返回一些空行保活，json.loads 会跳过开头的空白。
             raw = await resp.read()
             if resp.status == 200:
@@ -289,6 +400,96 @@ class DeepSeekProvider(LLMProvider):
     async def aclose(self) -> None:
         if self._session is not None:
             await self._session.close()
+
+
+def _function(tool: Tool, *, strict: bool) -> dict[str, Any]:
+    function: dict[str, Any] = {"name": tool.name, "description": tool.description, "parameters": tool.input_schema}
+    if strict and tool.strict:
+        function["strict"] = True
+    return {"type": "function", "function": function}
+
+
+def _call_name(call: dict[str, Any]) -> str:
+    return str((call.get("function") or {}).get("name") or "")
+
+
+def _call_arguments(call: dict[str, Any]) -> dict[str, Any]:
+    """参数是 JSON 字符串；解析不了按空参数处理，工具自己报错。"""
+    raw = (call.get("function") or {}).get("arguments")
+    try:
+        arguments = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return {}
+    return arguments if isinstance(arguments, dict) else {}
+
+
+async def _run_tool(tools: Toolset, call: dict[str, Any], links: frozenset[str]) -> ToolResult:
+    tool = tools.find(_call_name(call))
+    if tool is None:
+        return ToolResult(f"没有这个工具：{_call_name(call)}", is_error=True)
+    try:
+        return await tool.run(_call_arguments(call), links)
+    except Exception as e:
+        log.exception("工具 %s 执行失败", tool.name)
+        return ToolResult(f"工具执行失败：{type(e).__name__}: {e}", is_error=True)
+
+
+def _tool_messages(calls: Sequence[dict[str, Any]], results: dict[str, ToolResult], missing: str) -> list[dict[str, Any]]:
+    """每个工具调用一条 tool 消息；results 里没有的用 missing 作为出错结果。"""
+    out = []
+    for call in calls:
+        result = results.get(call.get("id", "")) or ToolResult(missing, is_error=True)
+        content = f"[出错] {result.content}" if result.is_error else result.content
+        out.append({"role": "tool", "tool_call_id": call.get("id"), "content": content})
+    return out
+
+
+class DeepSeekSearchTool(Tool):
+    """本地搜索工具，背后是 DeepSeek 的 Search 接口（按成功请求计费，每 1000 次 5 元）。每轮最多用 max_uses 次。"""
+
+    name = "web_search"
+    description = (
+        "联网搜索网页，返回标题、网址、发布时间和摘要。问题涉及最近的事件、实时数据、具体的产品或人物等可能变化的信息时使用；"
+        "常识、闲聊、计算不需要搜索。query 用简洁的关键词。"
+    )
+    input_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+    strict = True
+
+    def __init__(self, provider: DeepSeekProvider, max_uses: int) -> None:
+        self._provider = provider
+        self._max_uses = max_uses
+        self._used = 0
+
+    async def run(self, arguments: dict[str, Any], links: frozenset[str]) -> ToolResult:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return ToolResult("搜索关键词不能为空。", is_error=True)
+        if self._max_uses and self._used >= self._max_uses:
+            return ToolResult(f"这一轮的搜索次数到上限了（{self._max_uses} 次），请根据已有的结果回答。", is_error=True)
+        self._used += 1
+        try:
+            results = await self._provider.search(query)
+        except (DeepSeekError, aiohttp.ClientError, TimeoutError, ValueError) as e:
+            log.warning("DeepSeek 搜索失败：%s", e)
+            return ToolResult(f"搜索失败：{e}", is_error=True, search_requests=1)
+        if not results:
+            return ToolResult("没有搜到相关结果。", search_requests=1)
+        lines = []
+        for r in results:
+            date = f"（{r['date'][:10]}）" if r.get("date") else ""
+            summary = str(r.get("summary") or r.get("snippet") or "")[:SEARCH_SUMMARY_MAX]
+            lines.append(f"- {r.get('title') or ''}{date}\n  {r.get('url') or ''}\n  {summary}")
+        return ToolResult(
+            "\n".join(lines),
+            links=tuple(str(r["url"]) for r in results if r.get("url")),
+            cost_usd=SEARCH_PRICE_USD,
+            search_requests=1,
+        )
 
 
 def _error_message(raw: bytes) -> str:

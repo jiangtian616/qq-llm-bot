@@ -8,7 +8,7 @@ from typing import Any
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.network import DIRECT, Proxy
 from agent_core.core.ports.secrets import SecretReader
-from agent_core.core.ports.tool import Toolset
+from agent_core.core.ports.tool import Tool, Toolset
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +125,10 @@ class LLMProvider(abc.ABC):
         有工具时在这里跑工具循环：模型调用本地工具就执行、把结果交回去接着请求，直到模型不再调用工具，
         或者调用了 terminal 的工具（回复工具）。只有 capabilities().tools 为真的提供商会收到本地工具。
         """
+
+    def search_tool(self, max_uses: int) -> Tool | None:
+        """没有服务端搜索、但能提供本地搜索工具的提供商（如 DeepSeek 的 Search 接口）在这里返回它。"""
+        return None
 
     async def compact(self, messages: Sequence[Any], tools: Toolset | None = None) -> CompactResult | None:
         """把 messages（以一轮的结尾收尾）压缩成一条摘要消息；不支持或没拿到摘要时返回 None。

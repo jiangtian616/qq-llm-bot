@@ -290,7 +290,10 @@ def _outbox_view(o: Any, c: Any) -> dict[str, Any]:
 
 
 def _outbox_text(payload: dict[str, Any]) -> str:
-    """图片消息没有文字，显示成「[图片] 链接」。"""
+    """图片、卡片消息没有文字，显示成「[图片] 链接」「[卡片] 标题」。"""
+    card = payload.get("card")
+    if isinstance(card, dict):
+        return f"[卡片] {card.get('title') or ''}"
     image_url = payload.get("image_url")
     return f"[图片] {image_url}" if image_url else str(payload.get("content") or "")
 

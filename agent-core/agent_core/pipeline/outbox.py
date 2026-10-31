@@ -108,6 +108,7 @@ class OutboxWorker:
                     msg_seq=row.msg_seq,
                     msg_type=row.msg_type,
                     image_url=payload.get("image_url"),
+                    card=payload.get("card"),
                 )
             )
         except Exception as e:

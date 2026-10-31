@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from agent_core.agent.prompt import (
@@ -31,12 +31,14 @@ from agent_core.agent.prompt import (
 )
 from agent_core.agent.media import MediaFetcher, note_history
 from agent_core.agent.providers import ProviderPool
-from agent_core.agent.reply import compose_parts, compose_text
-from agent_core.agent.tools import ReplyTool
+from agent_core.agent.reply import compose_parts, compose_text, find_urls
+from agent_core.agent.tools import PageImagesTool, ReplyTool
+from agent_core.agent.web import fetch_page
 from agent_core.core.bus import BusEvent, EventBus
 from agent_core.core.clock import now_ms, start_of_local_day_ms
 from agent_core.core.models import GenerateResult, InboundMessage, NeutralMessage, Scene
-from agent_core.core.ports import ChannelAdapter, LLMProvider, ServerTool, Toolset
+from agent_core.core.network import Proxy
+from agent_core.core.ports import ChannelAdapter, LLMProvider, ServerTool, Tool, Toolset
 from agent_core.infra.db.database import Database
 from agent_core.infra.db.repos import Ingested, OutboxChunk
 from agent_core.pipeline.middlewares.rate_limit import RateLimiter
@@ -66,16 +68,24 @@ class ToolOptions:
     rich_media: bool
     web_search: bool
     web_search_max_uses: int
+    web_proxy: Proxy
+    """读网页用的代理（和模型接口一样走 network.proxy_for_providers）。"""
 
     def toolset(self, provider: LLMProvider) -> Toolset:
+        """顺序固定：服务端搜索、本地搜索、page_images、回复工具。
+
+        搜索优先用提供商自带的服务端搜索；没有的话用提供商给的本地搜索工具（如 DeepSeek 的 Search 接口）。
+        """
         caps = provider.capabilities()
-        server = (
-            (ServerTool("web_search", self.web_search_max_uses),)
-            if self.web_search and "web_search" in caps.server_tools
-            else ()
-        )
-        local = (ReplyTool(),) if self.rich_media and caps.tools else ()
-        return Toolset(server=server, local=local, max_rounds=MAX_TOOL_ROUNDS)
+        server: tuple[ServerTool, ...] = ()
+        local: list[Tool] = []
+        if self.web_search and "web_search" in caps.server_tools:
+            server = (ServerTool("web_search", self.web_search_max_uses),)
+        elif self.web_search and caps.tools and (search := provider.search_tool(self.web_search_max_uses)):
+            local.append(search)
+        if self.rich_media and caps.tools:
+            local += [PageImagesTool(self.web_proxy), ReplyTool()]
+        return Toolset(server=server, local=tuple(local), max_rounds=MAX_TOOL_ROUNDS)
 
 
 class AgentEngine:
@@ -178,6 +188,7 @@ class AgentEngine:
             rich_media=bool(await setting("reply.rich_media.enabled")),
             web_search=bool(await setting("tools.web_search.enabled")),
             web_search_max_uses=int(await setting("tools.web_search.max_uses") or 0),
+            web_proxy=await self._db.settings.proxy("providers"),
         )
         await self._answer(inbox, msg, channel, ingested, profile, max_chunks, vision, limits, options)
 
@@ -309,6 +320,10 @@ class AgentEngine:
             user_message = provider.build_context([NeutralMessage("user", text, images=media.images)])[0]
             # 存进历史的版本不带图片数据，只有文字里的「[图片1]」标记。
             stored_user = provider.build_context([NeutralMessage("user", text)])[0] if media.images else user_message
+            # 用户自己发的链接和图片可以直接用（读网页、发图）。
+            seed = {u for line in lines for u in find_urls(line.content)}
+            seed |= {a.url for line in lines for a in line.attachments if a.url}
+            tools = replace(tools, seed_links=frozenset(seed))
 
             started = time.monotonic()
             result = await asyncio.wait_for(provider.generate([*history, user_message], tools), TURN_TIMEOUT_S)
@@ -325,7 +340,13 @@ class AgentEngine:
         window = channel.reply_window(msg.scene)
         limit = min(int(max_chunks or window.max_replies), window.max_replies)
         if result.reply_parts is not None:
-            reply = compose_parts(result.reply_parts, limit, fallback=EMPTY_REPLY_TEXT)
+            reply = await compose_parts(
+                result.reply_parts,
+                limit,
+                fallback=EMPTY_REPLY_TEXT,
+                links=result.links | tools.seed_links,
+                read_page=lambda url: fetch_page(url, options.web_proxy),
+            )
         else:
             reply = compose_text(result.text, limit, fallback=EMPTY_REPLY_TEXT)
         # 拒答时没有正常内容，这一轮不进提供商历史（空的 assistant 消息会让下一次请求报错）。
@@ -462,7 +483,8 @@ def trim_pending(pending: Sequence[NeutralMessage], max_messages: int, max_chars
 def turn_starts(history: Sequence[Any]) -> list[int]:
     """每一轮开头那条 user 消息的下标：第一条 user 消息，以及每条紧跟在一轮结尾后面的 user 消息。
 
-    一轮的结尾是 assistant 回复，或者回复工具的结果（只有 tool_result 的 user 消息）；工具循环中间的工具结果不是开头。
+    一轮的结尾是 assistant 回复，或者回复工具的结果（Claude 是只有 tool_result 的 user 消息，DeepSeek 是 tool 消息）；
+    工具循环中间的工具结果后面跟的是 assistant，不会被当成开头。
     从这些位置切开，前后两半都是完整的轮次：压缩的部分以一轮的结尾收尾，保留的部分以 user 消息开头。
     """
     starts: list[int] = []
@@ -470,7 +492,7 @@ def turn_starts(history: Sequence[Any]) -> list[int]:
         if _role(m) != "user" or _only_tool_results(m):
             continue
         prev = history[i - 1] if i else None
-        if not starts or _role(prev) == "assistant" or _only_tool_results(prev):
+        if not starts or _role(prev) in ("assistant", "tool") or _only_tool_results(prev):
             starts.append(i)
     return starts
 

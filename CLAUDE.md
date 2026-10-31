@@ -29,6 +29,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 - `ANTHROPIC_BASE_URL`：Claude 接口地址（anthropic SDK 自己读取）
 - `DEEPSEEK_BASE_URL`：DeepSeek 接口地址（`plugins/provider_deepseek/provider.py`）
 - `QQ_LLM_BOT_SECRETS=file`：密钥存文件，不写进系统密钥库
+- `QQ_LLM_BOT_ALLOW_PRIVATE_FETCH=1`：读网页、下载图片时允许访问本机和内网地址（默认只访问公网），让它们指向本地模拟服务；只用于开发调试
 - `QQ_LLM_BOT_DATA_DIR`：数据目录（桌面端和核心服务都认）；`QQ_LLM_BOT_CORE`：桌面端要拉起的核心服务可执行文件
 
 控制接口的端口和令牌在数据目录的 `control.json` 里，请求要带 `Authorization: Bearer <token>`；`POST /shutdown` 可以平稳停止核心服务。
@@ -47,7 +48,9 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 - `plugins/`：`channel_qq`（QQ 接入，WebSocket 传输；Webhook 只是空壳）、`provider_claude` 和 `provider_deepseek`（Chat Completions 接口，直接用 aiohttp）。提供商插件要实现 `describe()`，返回模型目录（各模型支持的 effort、默认 effort、输出上限、价格、能不能看图），控制接口 `GET /providers` 原样给桌面端画模型配置界面，保存模型配置时也按它校验；Claude 的目录在 `plugins/provider_claude/catalog.py`，以官方文档为准。插件通过 `pyproject.toml` 的 entry points 注册；Nuitka 打包后读不到这些元数据，所以 `app/registry.py` 的 `BUILTIN_PLUGINS` 里还要再登记一份。新增插件两处都要加。
 - `pipeline/`：消息流水线。`ConnectionManager` 在同一个事务里写入 `inbox_events` 并更新网关的 `last_seq`（按事件 ID 去重）→ `Dispatcher` 加租约领取，同一会话串行处理 → `AgentEngine` 生成回复 → 回复和要发的消息在同一个事务里写进 `outbox` → `OutboxWorker` 发送，按 `msg_seq` 去重，按错误码分类重试。启动时释放遗留的租约，崩溃重启后接着处理。`MaintenanceWorker` 每天清理超期数据、备份数据库。
 - `agent/engine.py`：判断是否触发回复、处理指令（`/清空`、`/帮助`）、限频和每日预算、组装上下文、调用提供商。`agent/media.py` 负责下载图片交给模型。
-- 工具（`core/ports/tool.py`）：本地工具（`Tool`，放在 `agent/tools/`，各提供商通用）和服务端工具（`ServerTool`，如 Claude 自带的 `web_search`）。工具循环写在提供商插件的 `generate()` 里：执行本地工具、把结果交回去接着请求，服务端工具返回 `pause_turn` 就原样发回；模型调用 `terminal` 的回复工具（`agent/tools/reply.py`）这一轮就结束，参数作为结构化的回复段交给引擎，同时补上它的工具结果（每个工具调用都要有结果，压缩请求也拒绝以没结果的工具调用结尾）。回复格式的规则写在回复工具的描述里，不依赖用户的提示词。`agent/reply.py` 把回复段（或没调用回复工具时的文字，兜底解析 Markdown 图片）排成发件箱的几段，文字里的网址一律去掉（QQ 拒收带网址的消息，40054010）。开关是 `reply.rich_media.enabled`（默认开，提供商支持工具才生效）和 `tools.web_search.*`（默认关）；整轮限时、最多几轮工具调用是 `engine.py` 里的常量。DeepSeek 还没接 function calling（`capabilities().tools` 为假）。
+- 工具（`core/ports/tool.py`）：本地工具（`Tool`，放在 `agent/tools/`，各提供商通用）和服务端工具（`ServerTool`，如 Claude 自带的 `web_search`）。工具循环写在提供商插件的 `generate()` 里：执行本地工具、把结果交回去接着请求，服务端工具返回 `pause_turn` 就原样发回；模型调用 `terminal` 的回复工具（`agent/tools/reply.py`）这一轮就结束，参数作为结构化的回复段（文字、图片、图文卡片）交给引擎，同时补上它的工具结果（每个工具调用都要有结果，压缩请求也拒绝以没结果的工具调用结尾）。回复格式的规则写在回复工具的描述里，不依赖用户的提示词。联网搜索：Claude 用服务端 `web_search`（基础版），DeepSeek 没有服务端搜索，`search_tool()` 给出本地的 `web_search`（Search 接口）；DeepSeek 的工具参数用 strict 模式走 `/beta`，失败就退回普通地址，带 tools 的请求要回传历史里全部的 `reasoning_content`。
+- 可信链接：工具循环记下这一轮出现过的链接（用户消息和附件、搜索结果、工具结果）。回复里的图片、卡片只能用这些链接，`validate()` 不过就把原因交回模型重来一次，再不合规由回复编排丢掉那一段。图片链接靠 `page_images`（`agent/tools/page_images.py`）读网页拿到，它也只读出现过的网址。读网页和下载图片都走 `infra/http.py` 的 `fetch_public()`，每一跳都检查目标地址只访问公网（放行代理 TUN 的 fake-ip 网段）。
+- `agent/reply.py` 把回复段（或没调用回复工具时的文字，兜底解析 Markdown 图片）排成发件箱的几段：文字里的网址一律去掉（QQ 拒收带网址的消息，40054010）；卡片按 QQ 的要求补全（标题、摘要、https 的网址和封面，没写的从网页的 og 信息取，拿不到封面就退回成文字标题）。QQ 适配器发卡片被拒时改发文字「标题：摘要」，用同一个 `msg_seq`。开关是 `reply.rich_media.enabled`（默认开，提供商支持工具才生效）和 `tools.web_search.*`（默认关）；整轮限时、最多几轮工具调用是 `engine.py` 里的常量。
 - `infra/`：SQLite（WAL）的仓储类都在 `infra/db/repos.py`，迁移在 `infra/db/migrations/`；密钥存储 `infra/secrets.py`。
 - `control/`：FastAPI 控制接口。
 

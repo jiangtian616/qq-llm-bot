@@ -32,7 +32,7 @@ const _specs = <String, _Spec>{
   'history.max_turns': _Spec('历史超过多少轮时压缩', _Kind.integer, helper: '0 表示不按轮数压缩'),
   'history.keep_recent_turns': _Spec('压缩时原文保留最近几轮', _Kind.integer),
   'reply.max_chunks': _Spec('一条回复最多拆几段', _Kind.integer, min: 1, nullLabel: '平台上限（群 5、单聊 4）'),
-  'reply.rich_media.enabled': _Spec('图文回复', _Kind.toggle, helper: '模型用回复工具交出结构化的回复；模型配置不支持工具时不生效'),
+  'reply.rich_media.enabled': _Spec('图文回复', _Kind.toggle, helper: '模型按需要回复文字、图片或图文卡片'),
   'tools.web_search.enabled': _Spec('联网搜索', _Kind.toggle, helper: '用提供商自带的搜索，按次计费，算进每日预算'),
   'tools.web_search.max_uses': _Spec('每轮最多联网搜索几次', _Kind.integer, helper: '0 表示不限'),
   'rate_limit.per_user_per_min': _Spec('每个用户每分钟最多触发', _Kind.integer, helper: '0 表示不限'),

@@ -380,9 +380,12 @@ class OutboxChunk:
     content: str
     msg_type: int = 0
     image_url: str | None = None
+    card: dict[str, Any] | None = None
 
     def payload(self) -> dict[str, Any]:
         """发件箱 payload_json。早期的行没有 kind，读的时候按有没有 image_url 区分。"""
+        if self.card:
+            return {"kind": "card", "content": self.content, "card": self.card}
         if self.image_url:
             return {"kind": "image", "content": self.content, "image_url": self.image_url}
         return {"kind": "text", "content": self.content}

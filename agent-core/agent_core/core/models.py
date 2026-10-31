@@ -80,6 +80,8 @@ class OutboundMessage:
     msg_type: int = 0
     image_url: str | None = None
     """要发的图片链接（msg_type=7）；渠道负责上传到平台再发出，content 可以为空。"""
+    card: dict[str, Any] | None = None
+    """图文卡片（msg_type=8）：title、description、url、pic_url。"""
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -154,5 +156,7 @@ class GenerateResult:
     """模型调用回复工具时交来的回复段；没调用回复工具时为 None，用 text。"""
     search_requests: int = 0
     tool_rounds: int = 0
+    links: frozenset[str] = frozenset()
+    """这一轮出现过的链接（用户消息、搜索结果、工具结果）；回复里的图片、卡片只能用这些。"""
     context_tokens: int = 0
     """最后一次请求的输入加输出 token 数，用来估算下一次请求有多大（决定要不要压缩历史）。"""
