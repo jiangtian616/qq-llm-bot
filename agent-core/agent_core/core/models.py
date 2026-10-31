@@ -78,6 +78,8 @@ class OutboundMessage:
     reply_to_event_id: str | None = None
     msg_seq: int = 1
     msg_type: int = 0
+    image_url: str | None = None
+    """要发的图片链接（msg_type=7）；渠道负责上传到平台再发出，content 可以为空。"""
     extra: dict[str, Any] = field(default_factory=dict)
 
 

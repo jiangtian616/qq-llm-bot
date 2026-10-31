@@ -197,7 +197,7 @@ def build_views_router() -> APIRouter:
         payload = _json_or_text(o.payload_json)
         return {
             **_outbox_view(o, c),
-            "content": str(payload.get("content") or "") if isinstance(payload, dict) else "",
+            "content": _outbox_text(payload) if isinstance(payload, dict) else "",
             "payload": payload,
             "turn_id": o.turn_id,
             "reply_to_event_id": o.reply_to_event_id,
@@ -285,8 +285,14 @@ def _outbox_view(o: Any, c: Any) -> dict[str, Any]:
         "last_error": o.last_error,
         "sent_at": o.sent_at,
         "created_at": o.created_at,
-        "preview": _preview(json.loads(o.payload_json).get("content")),
+        "preview": _preview(_outbox_text(json.loads(o.payload_json))),
     }
+
+
+def _outbox_text(payload: dict[str, Any]) -> str:
+    """图片消息没有文字，显示成「[图片] 链接」。"""
+    image_url = payload.get("image_url")
+    return f"[图片] {image_url}" if image_url else str(payload.get("content") or "")
 
 
 def _json_or_text(raw: str | None) -> Any:

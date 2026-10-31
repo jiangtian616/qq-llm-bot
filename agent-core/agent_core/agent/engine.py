@@ -33,7 +33,7 @@ from agent_core.core.ports import ChannelAdapter, LLMProvider
 from agent_core.infra.db.database import Database
 from agent_core.infra.db.repos import Ingested, OutboxChunk
 from agent_core.pipeline.middlewares.rate_limit import RateLimiter
-from agent_core.pipeline.outbox import split_reply
+from agent_core.pipeline.outbox import compose_reply
 
 log = logging.getLogger(__name__)
 
@@ -287,7 +287,7 @@ class AgentEngine:
 
         window = channel.reply_window(msg.scene)
         limit = min(int(max_chunks or window.max_replies), window.max_replies)
-        chunks = [OutboxChunk(c) for c in split_reply(result.text or EMPTY_REPLY_TEXT, limit)]
+        chunks = compose_reply(result.text or EMPTY_REPLY_TEXT, limit)
         # 拒答时没有正常内容，这一轮不进提供商历史（空的 assistant 消息会让下一次请求报错）。
         provider_messages = [] if result.refused else [*prefix, stored_user, result.raw_assistant]
         await db.conversations.save_turn_result(

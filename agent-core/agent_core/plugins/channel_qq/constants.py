@@ -61,3 +61,15 @@ class ErrorCode(enum.IntEnum):
     DUPLICATE_MSG_SEQ = 40054005
     MESSAGE_TOO_LONG = 40054007
     REPLY_EXPIRED_OR_LIMIT = 40034128
+    UNSUPPORTED_FILE_FORMAT = 850019
+    MEDIA_DOWNLOAD_FAILED = 850026
+    FILE_TOO_LARGE = 850031
+
+
+class FileType(enum.IntEnum):
+    """富媒体上传接口的 file_type。"""
+
+    IMAGE = 1
+    VIDEO = 2
+    VOICE = 3
+    FILE = 4

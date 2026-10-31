@@ -11,16 +11,22 @@ import contextlib
 import json
 import logging
 import random
+import re
+import sys
 
 from agent_core.core.bus import BusEvent, EventBus
 from agent_core.core.clock import now_ms
 from agent_core.core.models import OutboundMessage, Scene, SendErrorClass
+from agent_core.infra.db.repos import OutboxChunk
 
 log = logging.getLogger(__name__)
 
 LEASE_MS = 60_000
 POLL_INTERVAL_S = 5.0
 MAX_CHUNK_CHARS = 1500
+MEDIA_MSG_TYPE = 7
+# 回复里的 Markdown 图片：![说明](链接 "标题")，只认 http(s) 链接。
+_IMAGE = re.compile(r'!\[[^\]]*\]\((https?://[^\s)]+)(?:\s+"[^"]*")?\)')
 
 
 def backoff_delay_s(attempt: int, base: float = 1.0, cap: float = 60.0) -> float:
@@ -47,6 +53,30 @@ def split_reply(text: str, max_chunks: int, max_chunk_chars: int = MAX_CHUNK_CHA
         chunks = chunks[:max_chunks]
         chunks[-1] = chunks[-1][: max_chunk_chars - 1] + "…"
     return chunks
+
+
+def compose_reply(text: str, max_chunks: int) -> list[OutboxChunk]:
+    """把回答排成要发的几段：Markdown 图片单独发成图片消息，和文字按原文顺序交替。
+
+    段数超过上限时，文字合在一起放前面，图片跟在后面，尽量保留图片，但至少给文字留一段。
+    """
+    parts = _IMAGE.split(text)  # 文字、链接、文字……交替
+    if len(parts) == 1:
+        return [OutboxChunk(c) for c in split_reply(text, max_chunks)]
+    images = parts[1::2]
+    texts = [t.strip() for t in parts[::2] if t.strip()]
+    ordered: list[OutboxChunk] = []
+    for i, part in enumerate(parts):
+        if i % 2:
+            ordered.append(OutboxChunk("", MEDIA_MSG_TYPE, image_url=part))
+        elif part.strip():
+            ordered.extend(OutboxChunk(c) for c in split_reply(part, sys.maxsize))
+    if len(ordered) <= max_chunks:
+        return ordered
+    body = "\n".join(texts)
+    n_images = min(len(images), max_chunks - (1 if body else 0))
+    chunks = [OutboxChunk(c) for c in split_reply(body, max_chunks - n_images)] if body else []
+    return chunks + [OutboxChunk("", MEDIA_MSG_TYPE, image_url=url) for url in images[:n_images]]
 
 
 class OutboxWorker:
@@ -107,6 +137,7 @@ class OutboxWorker:
                     reply_to_event_id=row.reply_to_event_id,
                     msg_seq=row.msg_seq,
                     msg_type=row.msg_type,
+                    image_url=payload.get("image_url"),
                 )
             )
         except Exception as e:

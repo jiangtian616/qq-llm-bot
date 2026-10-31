@@ -23,5 +23,9 @@ class QQAuthError(QQApiError):
     """换取 access_token 失败。11298 表示出口 IP 不在白名单，提示用户去控制台检查。"""
 
 
+class MediaUnavailableError(Exception):
+    """要发的图片取不到或不能用（链接打不开、太大、格式不对），重试也没用。"""
+
+
 class FatalGatewayError(Exception):
     """重连也没用的连接错误，如机器人被封禁、没有 intents 权限。"""

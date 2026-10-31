@@ -1,4 +1,4 @@
-"""调用 QQ OpenAPI：发群聊 / 单聊消息、取网关地址、查群内机器人状态。"""
+"""调用 QQ OpenAPI：发群聊 / 单聊消息、上传富媒体、取网关地址、查群内机器人状态。"""
 
 from __future__ import annotations
 
@@ -46,6 +46,12 @@ class OpenApiSender:
 
     async def send_c2c_message(self, user_openid: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.request("POST", f"/v2/users/{user_openid}/messages", payload)
+
+    async def upload_group_file(self, group_openid: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.request("POST", f"/v2/groups/{group_openid}/files", payload)
+
+    async def upload_c2c_file(self, user_openid: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.request("POST", f"/v2/users/{user_openid}/files", payload)
 
     async def get_group_bot_state(self, group_openid: str) -> dict[str, Any]:
         """消息接收设置等只读状态；11253 表示该接口只对白名单机器人开放。"""

@@ -379,6 +379,10 @@ class TurnContext:
 class OutboxChunk:
     content: str
     msg_type: int = 0
+    image_url: str | None = None
+
+    def payload(self) -> dict[str, Any]:
+        return {"content": self.content, "image_url": self.image_url} if self.image_url else {"content": self.content}
 
 
 def speaker_label(scene: str, openid: str, display_name: str | None) -> str:
@@ -814,7 +818,7 @@ class ConversationRepo(_Repo):
                         chunk_index=i,
                         chunk_count=len(chunks),
                         msg_type=chunk.msg_type,
-                        payload_json=json.dumps({"content": chunk.content}, ensure_ascii=False),
+                        payload_json=json.dumps(chunk.payload(), ensure_ascii=False),
                         status="pending",
                         deadline=deadline,
                         attempts=0,
