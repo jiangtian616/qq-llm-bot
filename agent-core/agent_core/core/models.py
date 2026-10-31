@@ -144,7 +144,15 @@ class GenerateResult:
     usage: Usage
     model: str
     refused: bool = False
-    raw_assistant: Any = None
-    """提供商的原始 assistant 消息（如 Claude 的完整 content 块），原样追加进该提供商的历史。"""
+    raw_messages: list[Any] = field(default_factory=list)
+    """本轮在 user 消息之后产生的原始消息（assistant 回复、工具结果……），原样追加进该提供商的历史。
+    以一轮的结尾收尾：最后一条要么是不带工具调用的 assistant 回复，要么是回复工具的结果。"""
     stop_details: dict[str, Any] | None = None
     cost_usd: float = 0.0
+    """本轮所有请求的费用，包括服务端工具（如联网搜索）的费用。"""
+    reply_parts: list[dict[str, Any]] | None = None
+    """模型调用回复工具时交来的回复段；没调用回复工具时为 None，用 text。"""
+    search_requests: int = 0
+    tool_rounds: int = 0
+    context_tokens: int = 0
+    """最后一次请求的输入加输出 token 数，用来估算下一次请求有多大（决定要不要压缩历史）。"""

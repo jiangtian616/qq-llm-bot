@@ -10,14 +10,21 @@
 - system prompt 保持固定并开启 prompt caching；SDK 自带 2 次重试（429、5xx、网络错误）。
 - 代理按 ctx.proxy：跟随系统代理时用 SDK 的默认行为；直连和自定义时覆盖掉 SDK 挂上的系统代理（socks 要 socksio）。
 - 历史压缩用官方的按需压缩（beta compact-2026-09-04）：服务端写摘要，返回带签名的 compaction 块，放在新一段历史最前面原样发回；
-  之后历史里带着这个块的请求都要走 beta 接口、带同一个 beta 头。
+  之后历史里带着这个块的请求都要走 beta 接口、带同一个 beta 头。压缩请求要带上和平时一样的工具。
+- 工具循环：联网搜索用服务端的 web_search（基础版 web_search_20250305，Anthropic 那边执行，按次计费），
+  本地工具由这里执行后把结果交回去接着请求。模型调用回复工具（terminal）就结束，参数作为回复交给引擎，
+  同时补上它的工具结果：每个工具调用都要有结果，历史才能接着用，压缩请求也拒绝以没有结果的工具调用结尾。
+  服务端工具跑太久会返回 pause_turn，原样发回去就接着做。本轮循环里的思考块原样带回，之前各轮的照旧去掉。
+- 没调用回复工具时，回复取最后一次响应里最后一个工具块之后的文字：搜索前那句「我查一下」不发出去。
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from collections.abc import Sequence
+from functools import partial
 from typing import Any
 
 from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
@@ -33,6 +40,7 @@ from agent_core.core.ports.provider import (
     ProviderContext,
     ProviderSpec,
 )
+from agent_core.core.ports.tool import Toolset, ToolResult
 from agent_core.plugins.provider_claude.catalog import (
     COMPACTION_MODELS,
     DEFAULT_MODEL,
@@ -52,6 +60,13 @@ DEFAULT_REFUSAL_REPLY = "抱歉，这个问题我没法回答。"
 EMPTY_ASSISTANT_TEXT = "（没有回复）"
 
 _THINKING_BLOCKS = {"thinking", "redacted_thinking"}
+
+WEB_SEARCH_TOOL = "web_search_20250305"
+# 联网搜索每 1000 次 10 美元，搜索结果另按输入 token 计费。
+WEB_SEARCH_PRICE = 0.01
+REPLY_ACK = "已发送给用户。"
+SKIPPED_BY_REPLY = "没有执行：这一轮已经回复了。"
+SKIPPED_BY_LIMIT = "没有执行：这一轮的工具调用次数到上限了。"
 
 COMPACT_BETA = "compact-2026-09-04"
 # 摘要请求的 max_tokens 包括摘要前的思考，官方建议留几千。
@@ -89,16 +104,98 @@ def estimate_cost(model: str, usage: Usage) -> float:
     ) / 1_000_000
 
 
-def without_thinking(messages: Sequence[Any]) -> list[Any]:
-    """去掉历史 assistant 消息里的 thinking / redacted_thinking 块，其余原样保留。"""
+def without_thinking(messages: Sequence[Any], *, keep_from: int | None = None) -> list[Any]:
+    """去掉历史 assistant 消息里的 thinking / redacted_thinking 块，其余原样保留。
+
+    keep_from 之后（本轮工具循环里）的消息原样保留：工具调用接着请求时，要带回同一轮的思考块。
+    """
     out: list[Any] = []
-    for m in messages:
+    for i, m in enumerate(messages):
+        if keep_from is not None and i >= keep_from:
+            out.append(m)
+            continue
         if not isinstance(m, dict) or m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             out.append(m)
             continue
         kept = [b for b in m["content"] if not (isinstance(b, dict) and b.get("type") in _THINKING_BLOCKS)]
         out.append({**m, "content": kept or [{"type": "text", "text": EMPTY_ASSISTANT_TEXT}]})
     return out
+
+
+def tool_definitions(tools: Toolset) -> list[dict[str, Any]]:
+    """翻译成接口的 tools 参数：服务端工具在前、本地工具在后，顺序固定。"""
+    defs: list[dict[str, Any]] = []
+    for server in tools.server:
+        if server.name != "web_search":
+            log.warning("Claude 没有服务端工具 %s，跳过", server.name)
+            continue
+        definition: dict[str, Any] = {"type": WEB_SEARCH_TOOL, "name": "web_search"}
+        if server.max_uses:
+            definition["max_uses"] = server.max_uses
+        defs.append(definition)
+    for tool in tools.local:
+        definition = {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+        if tool.strict:
+            definition["strict"] = True
+        defs.append(definition)
+    return defs
+
+
+def _usage(response: Any) -> Usage:
+    return Usage(
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cache_read_tokens=response.usage.cache_read_input_tokens or 0,
+        cache_write_tokens=response.usage.cache_creation_input_tokens or 0,
+    )
+
+
+def _add(a: Usage, b: Usage) -> Usage:
+    return Usage(
+        input_tokens=a.input_tokens + b.input_tokens,
+        output_tokens=a.output_tokens + b.output_tokens,
+        cache_read_tokens=a.cache_read_tokens + b.cache_read_tokens,
+        cache_write_tokens=a.cache_write_tokens + b.cache_write_tokens,
+    )
+
+
+def _web_searches(response: Any) -> int:
+    server = getattr(response.usage, "server_tool_use", None)
+    return int(getattr(server, "web_search_requests", 0) or 0)
+
+
+def _final_text(content: Sequence[Any]) -> str:
+    """最后一个工具相关的块之后的文字；前面那些（比如搜索前的「我查一下」）是过程，不算回复。"""
+    texts: list[str] = []
+    for block in content:
+        if block.type == "text":
+            texts.append(block.text)
+        elif block.type not in _THINKING_BLOCKS:
+            texts = []
+    return "".join(texts)
+
+
+async def _run_tool(tools: Toolset, call: Any) -> ToolResult:
+    tool = tools.find(call.name)
+    if tool is None:
+        return ToolResult(f"没有这个工具：{call.name}", is_error=True)
+    try:
+        return await tool.run(call.input if isinstance(call.input, dict) else {})
+    except Exception as e:
+        log.exception("工具 %s 执行失败", call.name)
+        return ToolResult(f"工具执行失败：{type(e).__name__}: {e}", is_error=True)
+
+
+def _tool_results(calls: Sequence[Any], results: dict[str, ToolResult], missing: str) -> dict[str, Any]:
+    """一条 user 消息，给每个工具调用一个结果；results 里没有的用 missing 作为出错结果。"""
+    blocks = []
+    for call in calls:
+        result = results.get(call.id) or ToolResult(missing, is_error=True)
+        block: dict[str, Any] = {"type": "tool_result", "tool_use_id": call.id, "content": result.content}
+        if result.is_error:
+            block["is_error"] = True
+        blocks.append(block)
+    return {"role": "user", "content": blocks}
 
 
 def _http_client(proxy: Proxy) -> DefaultAsyncHttpxClient:
@@ -144,7 +241,12 @@ class ClaudeProvider(LLMProvider):
         self._client = client
 
     def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(tools=True, vision=True, compaction=self.model in COMPACTION_MODELS)
+        return ProviderCapabilities(
+            tools=True,
+            vision=True,
+            compaction=self.model in COMPACTION_MODELS,
+            server_tools=frozenset({"web_search"}),
+        )
 
     def build_context(self, history: Sequence[NeutralMessage]) -> list[dict[str, Any]]:
         # 群聊多人共用一份历史，user 消息前加上发言人标识，模型才分得清谁在说话。
@@ -173,53 +275,86 @@ class ClaudeProvider(LLMProvider):
             messages.append({"role": m.role, "content": content})
         return messages
 
-    async def generate(self, messages: Sequence[Any]) -> GenerateResult:
+    async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
+        tools = tools or Toolset()
+        convo = list(messages)
+        # 最后一条是本轮 user 消息；它之后、本轮循环里的 assistant 消息，思考块要原样带回去。
+        turn_start = len(convo) - 1
+        produced: list[Any] = []
+        usage, cost, searches, rounds = Usage(), 0.0, 0, 0
+        while True:
+            response = await self._create(convo, tools, keep_thinking_from=turn_start)
+            # 原样保存完整 content，下一轮直接追加进历史，不改写。
+            raw_assistant = {"role": "assistant", "content": [block.to_dict() for block in response.content]}
+            convo.append(raw_assistant)
+            produced.append(raw_assistant)
+            step = _usage(response)
+            usage = _add(usage, step)
+            step_searches = _web_searches(response)
+            searches += step_searches
+            cost += estimate_cost(self.model, step) + step_searches * WEB_SEARCH_PRICE
+            result = partial(
+                GenerateResult,
+                usage=usage,
+                model=response.model,
+                raw_messages=produced,
+                cost_usd=cost,
+                search_requests=searches,
+                tool_rounds=rounds,
+                context_tokens=step.input_tokens + step.cache_read_tokens + step.cache_write_tokens + step.output_tokens,
+            )
+            if response.stop_reason == "refusal":
+                return result(
+                    text=self.refusal_reply,
+                    stop_reason="refusal",
+                    refused=True,
+                    stop_details=response.stop_details.to_dict() if response.stop_details else None,
+                )
+            calls = [block for block in response.content if block.type == "tool_use"]
+            if response.stop_reason != "pause_turn" and not calls:
+                return result(text=_final_text(response.content), stop_reason=response.stop_reason)
+
+            terminal = next((c for c in calls if (t := tools.find(c.name)) is not None and t.terminal), None)
+            if terminal is not None:
+                # 回复工具：参数就是回复，不再请求模型。所有工具调用都要有结果，历史才能接着用（压缩也要求这样）。
+                produced.append(_tool_results(calls, {terminal.id: ToolResult(REPLY_ACK)}, SKIPPED_BY_REPLY))
+                parts = terminal.input.get("parts") if isinstance(terminal.input, dict) else None
+                return result(
+                    text=_final_text(response.content),
+                    stop_reason=response.stop_reason,
+                    reply_parts=parts if isinstance(parts, list) else [],
+                )
+            if rounds >= tools.max_rounds:
+                log.warning("工具调用超过 %s 轮，结束这一轮", tools.max_rounds)
+                if calls:
+                    produced.append(_tool_results(calls, {}, SKIPPED_BY_LIMIT))
+                return result(text=_final_text(response.content), stop_reason="tool_rounds_exceeded")
+            rounds += 1
+            if calls:
+                # 服务端工具暂停（pause_turn）时没有本地工具调用，原样发回去它就接着做。
+                outcomes = await asyncio.gather(*(_run_tool(tools, c) for c in calls))
+                tool_message = _tool_results(calls, {c.id: r for c, r in zip(calls, outcomes, strict=True)}, "")
+                convo.append(tool_message)
+                produced.append(tool_message)
+
+    async def _create(self, messages: Sequence[Any], tools: Toolset, *, keep_thinking_from: int) -> Message:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "messages": without_thinking(messages),
+            "messages": without_thinking(messages, keep_from=keep_thinking_from),
             "cache_control": {"type": "ephemeral"},
         }
         if self.effort is not None:
             kwargs["output_config"] = {"effort": self.effort}
         if self.ctx.system_prompt:
             kwargs["system"] = self.ctx.system_prompt
+        if tools:
+            kwargs["tools"] = tool_definitions(tools)
         if _has_compaction(messages):
-            response: Message = await self._client.beta.messages.create(**kwargs, betas=[COMPACT_BETA])
-        else:
-            response = await self._client.messages.create(**kwargs)
+            return await self._client.beta.messages.create(**kwargs, betas=[COMPACT_BETA])
+        return await self._client.messages.create(**kwargs)
 
-        # 原样保存完整 content，下一轮直接追加进历史，不改写。
-        raw_assistant = {"role": "assistant", "content": [block.to_dict() for block in response.content]}
-        usage = Usage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-            cache_read_tokens=response.usage.cache_read_input_tokens or 0,
-            cache_write_tokens=response.usage.cache_creation_input_tokens or 0,
-        )
-        cost = estimate_cost(self.model, usage)
-        if response.stop_reason == "refusal":
-            return GenerateResult(
-                text=self.refusal_reply,
-                stop_reason="refusal",
-                usage=usage,
-                model=response.model,
-                refused=True,
-                raw_assistant=raw_assistant,
-                stop_details=response.stop_details.to_dict() if response.stop_details else None,
-                cost_usd=cost,
-            )
-        text = "".join(block.text for block in response.content if block.type == "text")
-        return GenerateResult(
-            text=text,
-            stop_reason=response.stop_reason,
-            usage=usage,
-            model=response.model,
-            raw_assistant=raw_assistant,
-            cost_usd=cost,
-        )
-
-    async def compact(self, messages: Sequence[Any]) -> CompactResult | None:
+    async def compact(self, messages: Sequence[Any], tools: Toolset | None = None) -> CompactResult | None:
         if self.model not in COMPACTION_MODELS:
             return None
         # 和平时的请求用同一个 system；摘要请求不生成回复，只返回一个 compaction 块。
@@ -234,6 +369,8 @@ class ClaudeProvider(LLMProvider):
             kwargs["system"] = self.ctx.system_prompt
         if self.effort is not None:
             kwargs["output_config"] = {"effort": self.effort}
+        if tools:
+            kwargs["tools"] = tool_definitions(tools)
         response = await self._client.beta.messages.create(**kwargs)
 
         # 摘要调用的用量只记在 usage.iterations 里，顶层的 input_tokens / output_tokens 是 0。

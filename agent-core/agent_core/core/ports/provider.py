@@ -8,6 +8,7 @@ from typing import Any
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.network import DIRECT, Proxy
 from agent_core.core.ports.secrets import SecretReader
+from agent_core.core.ports.tool import Toolset
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,8 @@ class ProviderCapabilities:
     vision: bool = False
     compaction: bool = False
     """能把较早的历史压缩成一条摘要消息（compact()）。"""
+    server_tools: frozenset[str] = frozenset()
+    """提供商自带、在它那边执行的工具（如 web_search）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,11 +119,18 @@ class LLMProvider(abc.ABC):
         """从中立历史构造该提供商的消息列表（只在没有该提供商原始历史时使用）。"""
 
     @abc.abstractmethod
-    async def generate(self, messages: Sequence[Any]) -> GenerateResult:
-        """messages 是该提供商格式的完整历史，最后一条是本轮 user 消息。"""
+    async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
+        """messages 是该提供商格式的完整历史，最后一条是本轮 user 消息。
 
-    async def compact(self, messages: Sequence[Any]) -> CompactResult | None:
-        """把 messages（以 assistant 回复结尾）压缩成一条摘要消息；不支持或没拿到摘要时返回 None。"""
+        有工具时在这里跑工具循环：模型调用本地工具就执行、把结果交回去接着请求，直到模型不再调用工具，
+        或者调用了 terminal 的工具（回复工具）。只有 capabilities().tools 为真的提供商会收到本地工具。
+        """
+
+    async def compact(self, messages: Sequence[Any], tools: Toolset | None = None) -> CompactResult | None:
+        """把 messages（以一轮的结尾收尾）压缩成一条摘要消息；不支持或没拿到摘要时返回 None。
+
+        tools 和平时请求用的一样：历史里有工具调用时，压缩请求也要带上同样的工具。
+        """
         return None
 
     async def aclose(self) -> None:

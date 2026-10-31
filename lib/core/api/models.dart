@@ -290,6 +290,7 @@ class TurnSummary {
     required this.outputTokens,
     required this.cacheReadTokens,
     required this.costUsd,
+    this.searchRequests = 0,
     this.latencyMs,
   });
 
@@ -299,6 +300,9 @@ class TurnSummary {
   final int outputTokens;
   final int cacheReadTokens;
   final double costUsd;
+
+  /// 联网搜索次数；老版本的核心服务没有这个字段。
+  final int searchRequests;
   final int? latencyMs;
 
   factory TurnSummary.fromJson(Map<String, dynamic> json) => TurnSummary(
@@ -308,6 +312,7 @@ class TurnSummary {
         outputTokens: json['output_tokens'] as int,
         cacheReadTokens: json['cache_read_tokens'] as int,
         costUsd: (json['cost_usd'] as num).toDouble(),
+        searchRequests: (json['search_requests'] as int?) ?? 0,
         latencyMs: json['latency_ms'] as int?,
       );
 }

@@ -382,7 +382,10 @@ class OutboxChunk:
     image_url: str | None = None
 
     def payload(self) -> dict[str, Any]:
-        return {"content": self.content, "image_url": self.image_url} if self.image_url else {"content": self.content}
+        """发件箱 payload_json。早期的行没有 kind，读的时候按有没有 image_url 区分。"""
+        if self.image_url:
+            return {"kind": "image", "content": self.content, "image_url": self.image_url}
+        return {"kind": "text", "content": self.content}
 
 
 def speaker_label(scene: str, openid: str, display_name: str | None) -> str:
@@ -577,6 +580,8 @@ class ConversationRepo(_Repo):
                     "output_tokens": turn.output_tokens,
                     "cache_read_tokens": turn.cache_read_tokens,
                     "cost_usd": turn.cost_usd,
+                    "search_requests": turn.search_requests,
+                    "tool_rounds": turn.tool_rounds,
                     "latency_ms": turn.latency_ms,
                     "stop_reason": turn.stop_reason,
                 },
@@ -602,6 +607,7 @@ class ConversationRepo(_Repo):
         summary: str | None,
         turn_id: int,
         keep_turns: int,
+        tools_fingerprint: str = "",
     ) -> int | None:
         """历史压缩：开始新一段，写入新一段的原始历史（摘要块 + 保留的最近几轮）和摘要文字。
 
@@ -653,6 +659,7 @@ class ConversationRepo(_Repo):
                         role=raw["role"],
                         raw_json=json.dumps(raw, ensure_ascii=False),
                         turn_id=turn_id,
+                        tools_fingerprint=tools_fingerprint,
                         created_at=now,
                     )
                 )
@@ -679,10 +686,11 @@ class ConversationRepo(_Repo):
             await s.execute(update(Turn).where(Turn.id == turn_id).values(cost_usd=Turn.cost_usd + cost_usd))
 
     async def load_context(
-        self, *, conversation_id: int, history_epoch: int, provider: str, current_message_id: int
+        self, *, conversation_id: int, history_epoch: int, provider: str, tools_fingerprint: str, current_message_id: int
     ) -> TurnContext:
+        """原始历史只取工具指纹和本轮一致的行：工具清单变过的话，按换了提供商处理（重建，或者补上中间的轮次）。"""
         async with self._sessions() as s:
-            raw_rows = (
+            all_rows = (
                 await s.scalars(
                     select(ProviderMessage)
                     .where(
@@ -693,6 +701,7 @@ class ConversationRepo(_Repo):
                     .order_by(ProviderMessage.seq_no)
                 )
             ).all()
+            raw_rows = [r for r in all_rows if (r.tools_fingerprint or "") == tools_fingerprint]
             conv = await s.get(Conversation, conversation_id)
             assert conv is not None
             sender = aliased(Contact)
@@ -744,7 +753,8 @@ class ConversationRepo(_Repo):
         )
         return TurnContext(
             provider_history=[json.loads(r.raw_json) for r in raw_rows],
-            next_seq=(raw_rows[-1].seq_no + 1) if raw_rows else 1,
+            # 序号在同一提供商、同一段里唯一（不分指纹），接着所有行往后排。
+            next_seq=(all_rows[-1].seq_no + 1) if all_rows else 1,
             neutral_before=before,
             missing=missing,
             pending=neutral[last_answered + 1 :],
@@ -766,6 +776,7 @@ class ConversationRepo(_Repo):
         provider_messages: Sequence[Any],
         next_seq: int,
         reply_text: str,
+        tools_fingerprint: str = "",
         chunks: Sequence[OutboxChunk],
         reply_to_msg_id: str | None,
         deadline: int | None,
@@ -784,6 +795,7 @@ class ConversationRepo(_Repo):
                         role=raw["role"],
                         raw_json=json.dumps(raw, ensure_ascii=False),
                         turn_id=turn_id,
+                        tools_fingerprint=tools_fingerprint,
                         created_at=now,
                     )
                 )

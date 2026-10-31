@@ -885,6 +885,26 @@ class _BehaviorSection extends GetView<ConfigController> {
                 onChanged: (v) => _report(controller.setSetting('vision.enabled', v)),
               ),
             ),
+            const Divider(height: 1),
+            _SettingRow(
+              title: '图文回复',
+              subtitle: '让模型用回复工具交出结构化的回复，文字里的网址会去掉（QQ 不允许发链接）；'
+                  '模型配置不支持工具时（比如 DeepSeek）不生效',
+              trailing: Switch(
+                value: (s['reply.rich_media.enabled'] as bool?) ?? true,
+                onChanged: (v) => _report(controller.setSetting('reply.rich_media.enabled', v)),
+              ),
+            ),
+            const Divider(height: 1),
+            _SettingRow(
+              title: '联网搜索',
+              subtitle: '模型觉得需要最新信息时自己去搜，用的是提供商自带的搜索（Claude 每 1000 次 10 美元，'
+                  '另按搜索结果的 token 计费，都算进每日预算）；每轮最多搜几次在下面「限频、预算」里设',
+              trailing: Switch(
+                value: (s['tools.web_search.enabled'] as bool?) ?? false,
+                onChanged: (v) => _report(controller.setSetting('tools.web_search.enabled', v)),
+              ),
+            ),
           ],
         );
       }),
@@ -996,6 +1016,7 @@ class _LimitsSection extends StatefulWidget {
 class _LimitsSectionState extends State<_LimitsSection> {
   static const keys = [
     'rate_limit.per_user_per_min',
+    'tools.web_search.max_uses',
     'budget.daily_usd',
     'retention.messages_days',
     'retention.raw_events_days',
@@ -1020,9 +1041,14 @@ class _LimitsSectionState extends State<_LimitsSection> {
 
   Future<void> _save() async {
     final values = <String, Object?>{};
-    for (final k in ['rate_limit.per_user_per_min', 'retention.messages_days', 'retention.raw_events_days']) {
+    for (final k in [
+      'rate_limit.per_user_per_min',
+      'tools.web_search.max_uses',
+      'retention.messages_days',
+      'retention.raw_events_days',
+    ]) {
       final v = int.tryParse(_fields[k]!.text.trim());
-      if (v == null || v < 0) return _show('限频和保留天数要填不小于 0 的整数', error: true);
+      if (v == null || v < 0) return _show('限频、搜索次数和保留天数要填不小于 0 的整数', error: true);
       values[k] = v;
     }
     final budgetText = _fields['budget.daily_usd']!.text.trim();
@@ -1070,6 +1096,7 @@ class _LimitsSectionState extends State<_LimitsSection> {
         children: [
           _FieldGrid(children: [
             _field('rate_limit.per_user_per_min', '每个用户每分钟最多触发', '超过后只回一次提醒；0 表示不限', suffix: '次'),
+            _field('tools.web_search.max_uses', '每轮最多联网搜索', '开了联网搜索才生效；0 表示不限', suffix: '次'),
             _field('budget.daily_usd', '每日费用上限', '用完后今天暂停回复；留空表示不限', suffix: '美元'),
             _field('retention.messages_days', '聊天记录保留', '0 表示永久保留', suffix: '天'),
             _field('retention.raw_events_days', '原始事件保留', '收件箱里处理完的事件；0 表示永久', suffix: '天'),

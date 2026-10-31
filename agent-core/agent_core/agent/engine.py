@@ -7,10 +7,15 @@
 - 每轮结束后估算下一次请求的大小，超过 history.compact_at_tokens 或轮数超过 history.max_turns 时，
   把较早的部分交给提供商压缩成摘要，最近 history.keep_recent_turns 轮原文保留，开始新一段。
   提供商不支持压缩或没拿到摘要时，只保留最近几轮。
+
+工具：开了图文回复（reply.rich_media.enabled）且提供商支持工具时，给模型回复工具，让它用结构化的回复段收尾；
+开了联网搜索（tools.web_search.enabled）且提供商自带搜索时，声明服务端搜索。工具清单变了，原始历史就和新请求对不上，
+按工具指纹从中立历史重建上下文，和换了提供商一样。整轮（包括所有工具调用）限时 TURN_TIMEOUT_S。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -26,16 +31,21 @@ from agent_core.agent.prompt import (
 )
 from agent_core.agent.media import MediaFetcher, note_history
 from agent_core.agent.providers import ProviderPool
+from agent_core.agent.reply import compose_parts, compose_text
+from agent_core.agent.tools import ReplyTool
 from agent_core.core.bus import BusEvent, EventBus
 from agent_core.core.clock import now_ms, start_of_local_day_ms
 from agent_core.core.models import GenerateResult, InboundMessage, NeutralMessage, Scene
-from agent_core.core.ports import ChannelAdapter, LLMProvider
+from agent_core.core.ports import ChannelAdapter, LLMProvider, ServerTool, Toolset
 from agent_core.infra.db.database import Database
 from agent_core.infra.db.repos import Ingested, OutboxChunk
 from agent_core.pipeline.middlewares.rate_limit import RateLimiter
-from agent_core.pipeline.outbox import compose_reply
 
 log = logging.getLogger(__name__)
+
+# 一轮最多几次工具调用（服务端搜索暂停后接着请求也算），整轮最长多少秒；群里被动回复的有效期是 5 分钟，要给发送留出时间。
+MAX_TOOL_ROUNDS = 4
+TURN_TIMEOUT_S = 150
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +57,25 @@ class ContextLimits:
     compact_at_tokens: int
     max_turns: int
     keep_recent_turns: int
+
+
+@dataclass(frozen=True, slots=True)
+class ToolOptions:
+    """这一轮给模型哪些工具（按会话 → 账号 → 全局取值）。"""
+
+    rich_media: bool
+    web_search: bool
+    web_search_max_uses: int
+
+    def toolset(self, provider: LLMProvider) -> Toolset:
+        caps = provider.capabilities()
+        server = (
+            (ServerTool("web_search", self.web_search_max_uses),)
+            if self.web_search and "web_search" in caps.server_tools
+            else ()
+        )
+        local = (ReplyTool(),) if self.rich_media and caps.tools else ()
+        return Toolset(server=server, local=local, max_rounds=MAX_TOOL_ROUNDS)
 
 
 class AgentEngine:
@@ -145,7 +174,12 @@ class AgentEngine:
             max_turns=int(await setting("history.max_turns") or 0),
             keep_recent_turns=int(await setting("history.keep_recent_turns") or 0),
         )
-        await self._answer(inbox, msg, channel, ingested, profile, max_chunks, vision, limits)
+        options = ToolOptions(
+            rich_media=bool(await setting("reply.rich_media.enabled")),
+            web_search=bool(await setting("tools.web_search.enabled")),
+            web_search_max_uses=int(await setting("tools.web_search.max_uses") or 0),
+        )
+        await self._answer(inbox, msg, channel, ingested, profile, max_chunks, vision, limits, options)
 
     async def _profile(self, profile_id: Any) -> Any:
         if profile_id:
@@ -239,6 +273,7 @@ class AgentEngine:
         max_chunks: Any,
         vision: bool,
         limits: ContextLimits,
+        options: ToolOptions,
     ) -> None:
         db = self._db
         turn_id = ingested.turn_id
@@ -246,18 +281,20 @@ class AgentEngine:
         await db.conversations.mark_turn(turn_id, status="running", started_at=now_ms())
         try:
             provider = await self._providers.get(profile, await db.settings.proxy("providers"))
+            tools = options.toolset(provider)
             ctx = await db.conversations.load_context(
                 conversation_id=ingested.conversation_id,
                 history_epoch=ingested.history_epoch,
                 provider=profile.provider,
+                tools_fingerprint=tools.fingerprint(),
                 current_message_id=ingested.message_id,
             )
             if ctx.provider_history:
-                # 中间换过提供商又换回来：别的提供商答过的那几轮补在后面，和本轮一起追加进原始历史。
+                # 中间换过提供商（或工具清单）又换回来：别的提供商答过的那几轮补在后面，和本轮一起追加进原始历史。
                 prefix: list[Any] = provider.build_context([note_history(m) for m in ctx.missing]) if ctx.missing else []
                 history: list[Any] = [*ctx.provider_history, *prefix]
             else:
-                # 这个提供商在当前 epoch 还没有原始历史（新会话、清空过、或刚换了提供商）：从中立历史重建，
+                # 这个提供商在当前 epoch 还没有原始历史（新会话、清空过、刚换了提供商或工具清单）：从中立历史重建，
                 # 并把重建出来的前缀一起存下来，之后同一 epoch 里只追加。
                 # 历史里的图片只留文字标记，不重新下载。
                 history = provider.build_context([note_history(m) for m in ctx.neutral_before])
@@ -274,7 +311,7 @@ class AgentEngine:
             stored_user = provider.build_context([NeutralMessage("user", text)])[0] if media.images else user_message
 
             started = time.monotonic()
-            result = await provider.generate([*history, user_message])
+            result = await asyncio.wait_for(provider.generate([*history, user_message], tools), TURN_TIMEOUT_S)
             latency_ms = int((time.monotonic() - started) * 1000)
         except Exception as e:
             log.exception("模型调用失败（turn %s）", turn_id)
@@ -287,9 +324,12 @@ class AgentEngine:
 
         window = channel.reply_window(msg.scene)
         limit = min(int(max_chunks or window.max_replies), window.max_replies)
-        chunks = compose_reply(result.text or EMPTY_REPLY_TEXT, limit)
+        if result.reply_parts is not None:
+            reply = compose_parts(result.reply_parts, limit, fallback=EMPTY_REPLY_TEXT)
+        else:
+            reply = compose_text(result.text, limit, fallback=EMPTY_REPLY_TEXT)
         # 拒答时没有正常内容，这一轮不进提供商历史（空的 assistant 消息会让下一次请求报错）。
-        provider_messages = [] if result.refused else [*prefix, stored_user, result.raw_assistant]
+        provider_messages = [] if result.refused else [*prefix, stored_user, *result.raw_messages]
         await db.conversations.save_turn_result(
             inbox_id=inbox.id,
             account_id=msg.account_id,
@@ -298,9 +338,10 @@ class AgentEngine:
             turn_id=turn_id,
             provider=profile.provider,
             provider_messages=provider_messages,
+            tools_fingerprint=tools.fingerprint(),
             next_seq=ctx.next_seq,
-            reply_text=result.text or EMPTY_REPLY_TEXT,
-            chunks=chunks,
+            reply_text=reply.text,
+            chunks=reply.chunks,
             reply_to_msg_id=msg.platform_msg_id,
             deadline=inbox.reply_deadline,
             turn_fields={
@@ -312,6 +353,8 @@ class AgentEngine:
                 "cache_read_tokens": result.usage.cache_read_tokens,
                 "cache_write_tokens": result.usage.cache_write_tokens,
                 "cost_usd": result.cost_usd,
+                "search_requests": result.search_requests,
+                "tool_rounds": result.tool_rounds,
                 "latency_ms": latency_ms,
                 "finished_at": now_ms(),
             },
@@ -333,7 +376,7 @@ class AgentEngine:
             # 回复已经交给发件箱在发了；压缩在这之后做，只会让这个会话的下一条消息多等一会儿。
             try:
                 await self._maybe_compact(
-                    provider, [*history, stored_user, result.raw_assistant], result, msg, ingested, profile, limits
+                    provider, [*history, stored_user, *result.raw_messages], result, msg, ingested, profile, limits, tools
                 )
             except Exception:
                 log.exception("历史压缩失败（会话 %s）", ingested.conversation_id)
@@ -347,11 +390,11 @@ class AgentEngine:
         ingested: Ingested,
         profile: Any,
         limits: ContextLimits,
+        tools: Toolset,
     ) -> None:
         """这一轮之后历史太长了就压缩：较早的部分换成摘要，最近几轮原文保留，开始新一段。"""
-        usage = result.usage
-        # 下一次请求会带上这次的输入和这次的回复。
-        next_tokens = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.output_tokens
+        # 下一次请求会带上最后一次请求的输入和它的回复；工具循环里前面几次请求的用量不能加起来算。
+        next_tokens = result.context_tokens
         starts = turn_starts(history)
         too_long = limits.compact_at_tokens > 0 and next_tokens >= limits.compact_at_tokens
         too_many = limits.max_turns > 0 and len(starts) >= limits.max_turns
@@ -361,7 +404,7 @@ class AgentEngine:
         cut = starts[-keep] if keep else len(history)
         older, recent = history[:cut], history[cut:]
 
-        compacted = await provider.compact(older) if provider.capabilities().compaction else None
+        compacted = await provider.compact(older, tools) if provider.capabilities().compaction else None
         if compacted is not None:
             new_history, summary = [compacted.message, *recent], compacted.summary
         else:
@@ -372,6 +415,7 @@ class AgentEngine:
             conversation_id=ingested.conversation_id,
             from_epoch=ingested.history_epoch,
             provider=profile.provider,
+            tools_fingerprint=tools.fingerprint(),
             provider_messages=new_history,
             summary=summary,
             turn_id=ingested.turn_id,
@@ -416,16 +460,30 @@ def trim_pending(pending: Sequence[NeutralMessage], max_messages: int, max_chars
 
 
 def turn_starts(history: Sequence[Any]) -> list[int]:
-    """每一轮开头那条 user 消息的下标：第一条 user 消息，以及每条紧跟在 assistant 回复后面的 user 消息。
+    """每一轮开头那条 user 消息的下标：第一条 user 消息，以及每条紧跟在一轮结尾后面的 user 消息。
 
-    从这些位置切开，前后两半都是完整的轮次，压缩请求以 assistant 回复结尾，保留的部分以 user 消息开头。
+    一轮的结尾是 assistant 回复，或者回复工具的结果（只有 tool_result 的 user 消息）；工具循环中间的工具结果不是开头。
+    从这些位置切开，前后两半都是完整的轮次：压缩的部分以一轮的结尾收尾，保留的部分以 user 消息开头。
     """
     starts: list[int] = []
     for i, m in enumerate(history):
-        role = m.get("role") if isinstance(m, dict) else None
-        if role == "user" and (not starts or history[i - 1].get("role") == "assistant"):
+        if _role(m) != "user" or _only_tool_results(m):
+            continue
+        prev = history[i - 1] if i else None
+        if not starts or _role(prev) == "assistant" or _only_tool_results(prev):
             starts.append(i)
     return starts
+
+
+def _role(m: Any) -> str | None:
+    return m.get("role") if isinstance(m, dict) else None
+
+
+def _only_tool_results(m: Any) -> bool:
+    content = m.get("content") if _role(m) == "user" else None
+    return isinstance(content, list) and bool(content) and all(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
 
 
 _COMMANDS = {"清空", "clear", "帮助", "help"}

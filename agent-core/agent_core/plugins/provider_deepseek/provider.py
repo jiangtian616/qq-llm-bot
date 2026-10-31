@@ -33,6 +33,7 @@ import aiohttp
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
+from agent_core.core.ports.tool import Toolset
 from agent_core.infra.http import client_session
 from agent_core.plugins.provider_deepseek.catalog import DEFAULT_MODEL, PRICES, SPEC, is_peak
 
@@ -198,7 +199,8 @@ class DeepSeekProvider(LLMProvider):
             body["reasoning_effort"] = self.effort
         return body
 
-    async def generate(self, messages: Sequence[Any]) -> GenerateResult:
+    async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
+        # 还没接 function calling（capabilities().tools 为假），引擎不会给本地工具，也没有服务端工具。
         data, usage = await self._complete(self._body(messages))
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -207,6 +209,7 @@ class DeepSeekProvider(LLMProvider):
         raw_assistant = {**message, "role": "assistant"}
         cost = estimate_cost(self.model, usage)
         model = data.get("model") or self.model
+        context_tokens = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.output_tokens
         if finish == "content_filter":
             # 输出被内容过滤截掉了，没有能用的正文。
             return GenerateResult(
@@ -215,16 +218,18 @@ class DeepSeekProvider(LLMProvider):
                 usage=usage,
                 model=model,
                 refused=True,
-                raw_assistant=raw_assistant,
+                raw_messages=[raw_assistant],
                 cost_usd=cost,
+                context_tokens=context_tokens,
             )
         return GenerateResult(
             text=message.get("content") or "",
             stop_reason=finish,
             usage=usage,
             model=model,
-            raw_assistant=raw_assistant,
+            raw_messages=[raw_assistant],
             cost_usd=cost,
+            context_tokens=context_tokens,
         )
 
     async def _complete(self, body: dict[str, Any]) -> tuple[dict[str, Any], Usage]:

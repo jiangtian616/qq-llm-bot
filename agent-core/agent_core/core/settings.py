@@ -16,6 +16,11 @@ DEFAULTS: dict[str, Any] = {
     "provider_profile_id": None,
     # 一条回复最多拆几段；为空时用平台的回复次数上限（群 5、单聊 4）
     "reply.max_chunks": None,
+    # 图文回复：给模型回复工具，让它用结构化的回复段收尾（提供商支持工具时才生效）；关掉时请求里不带任何本地工具
+    "reply.rich_media.enabled": True,
+    # 联网搜索：用提供商自带的服务端搜索（Claude 每 1000 次 10 美元，另按搜索结果的 token 计费）；每轮最多搜几次
+    "tools.web_search.enabled": False,
+    "tools.web_search.max_uses": 3,
     # 历史压缩：一轮结束后，下一次请求预计超过这么多 token，或当前这一段超过这么多轮，就把较早的部分压成摘要，
     # 最近几轮原文保留，开始新一段（epoch 加 1）。模型不支持压缩时只保留最近几轮。0 表示不按这一项压缩
     "history.compact_at_tokens": 20000,

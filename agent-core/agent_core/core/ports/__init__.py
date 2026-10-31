@@ -5,7 +5,7 @@ from agent_core.core.ports.middleware import Middleware, NextHandler
 from agent_core.core.ports.provider import CompactResult, LLMProvider, ProviderCapabilities, ProviderContext
 from agent_core.core.ports.repository import Repository
 from agent_core.core.ports.secrets import SecretReader
-from agent_core.core.ports.tool import Tool
+from agent_core.core.ports.tool import ServerTool, Tool, Toolset, ToolResult
 from agent_core.core.ports.transport import InboundTransport, ResumeState, TransportContext
 
 __all__ = [
@@ -21,6 +21,9 @@ __all__ = [
     "Repository",
     "ResumeState",
     "SecretReader",
+    "ServerTool",
     "Tool",
+    "ToolResult",
+    "Toolset",
     "TransportContext",
 ]

@@ -396,6 +396,7 @@ class _Bubble extends StatelessWidget {
         if (t.status == 'failed') '模型调用失败',
         t.model,
         '输入 ${t.inputTokens}${t.cacheReadTokens > 0 ? '（缓存 ${t.cacheReadTokens}）' : ''} / 输出 ${t.outputTokens} token',
+        if (t.searchRequests > 0) '联网搜索 ${t.searchRequests} 次',
         formatUsd(t.costUsd),
         if (t.latencyMs != null) '${(t.latencyMs! / 1000).toStringAsFixed(1)} 秒',
       ];

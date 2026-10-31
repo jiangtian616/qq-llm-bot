@@ -194,6 +194,8 @@ class ProviderMessage(Base):
     role: Mapped[str] = mapped_column(Text)  # user / assistant
     raw_json: Mapped[str] = mapped_column(Text)
     turn_id: Mapped[int] = mapped_column(ForeignKey("turns.id", ondelete="CASCADE"))
+    # 写入时的工具清单指纹（Toolset.fingerprint()）；没有工具时是空串。和本轮的指纹不一致的行不接着用。
+    tools_fingerprint: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[int] = mapped_column(Integer)
 
 
@@ -239,6 +241,8 @@ class Turn(Base):
     cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cache_write_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    search_requests: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tool_rounds: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
