@@ -14,6 +14,7 @@ from agent_core.infra.db.repos import (
     OutboxRepo,
     ProfileRepo,
     SettingsRepo,
+    TraceRepo,
     UsageRepo,
 )
 
@@ -29,6 +30,7 @@ class Database:
         self.inbox = InboxRepo(sessions)
         self.conversations = ConversationRepo(sessions)
         self.outbox = OutboxRepo(sessions)
+        self.traces = TraceRepo(sessions)
         self.usage = UsageRepo(sessions)
         self.maintenance = MaintenanceRepo(sessions)
 

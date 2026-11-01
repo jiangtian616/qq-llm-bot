@@ -39,6 +39,7 @@ from agent_core.core.clock import now_ms, start_of_local_day_ms
 from agent_core.core.models import GenerateResult, InboundMessage, NeutralMessage, Scene
 from agent_core.core.network import Proxy
 from agent_core.core.ports import ChannelAdapter, LLMProvider, ServerTool, Tool, Toolset
+from agent_core.core.trace import Stopwatch, Trace
 from agent_core.infra.db.database import Database
 from agent_core.infra.db.repos import Ingested, OutboxChunk
 from agent_core.pipeline.middlewares.rate_limit import RateLimiter
@@ -289,7 +290,8 @@ class AgentEngine:
         db = self._db
         turn_id = ingested.turn_id
         assert turn_id is not None
-        await db.conversations.mark_turn(turn_id, status="running", started_at=now_ms())
+        await db.conversations.mark_turn(turn_id, status="running", started_at=now_ms(), inbox_id=inbox.id)
+        trace = Trace()
         try:
             provider = await self._providers.get(profile, await db.settings.proxy("providers"))
             tools = options.toolset(provider)
@@ -311,7 +313,8 @@ class AgentEngine:
                 history = provider.build_context([note_history(m) for m in ctx.neutral_before])
                 prefix = list(history)
             current = NeutralMessage("user", msg.content, speaker=ingested.sender_label or None, attachments=msg.attachments)
-            lines = [*trim_pending(ctx.pending, limits.pending_max_messages, limits.pending_max_chars), current]
+            pending = trim_pending(ctx.pending, limits.pending_max_messages, limits.pending_max_chars)
+            lines = [*pending, current]
             media = await self._media.collect(
                 lines, vision=vision and provider.capabilities().vision, proxy=await db.settings.proxy("qq")
             )
@@ -325,12 +328,42 @@ class AgentEngine:
             seed |= {a.url for line in lines for a in line.attachments if a.url}
             tools = replace(tools, seed_links=frozenset(seed))
 
+            kept = sum(1 for m in pending if any(m is p for p in ctx.pending))
+            notes = [f"第 {inbox.attempts} 次处理（之前失败过，或重启后接着处理）"] if inbox.attempts > 1 else []
+            notes.append(f"模型配置「{profile.name}」：{profile.provider} / {profile.model}")
+            if ctx.provider_history:
+                notes.append(
+                    f"历史：接着这个提供商的原始历史 {len(ctx.provider_history)} 条"
+                    + (f"，补上别的提供商答过的 {len(ctx.missing)} 条" if ctx.missing else "")
+                )
+            else:
+                notes.append(f"历史：从中立历史重建 {len(ctx.neutral_before)} 条（新会话、清空过，或换了提供商、工具清单）")
+            notes.append(f"这次请求共 {len(history) + 1} 条消息，历史第 {ingested.history_epoch} 段")
+            names = [t.name for t in tools.server] + [t.name for t in tools.local]
+            notes.append(f"工具：{'、'.join(names)}（指纹 {tools.fingerprint()}）" if names else "工具：无")
+            if ctx.pending:
+                omitted = len(ctx.pending) - kept
+                notes.append(f"带上之前没回复的群消息 {kept} 条" + (f"，省略更早的 {omitted} 条" if omitted else ""))
+            if media.images or media.failed:
+                notes.append(
+                    f"图片：交给模型 {len(media.images)} 张"
+                    + (f"，没能读取 {len(media.failed)} 张：{'；'.join(media.failed)}" if media.failed else "")
+                )
+            if seed:
+                notes.append(f"用户消息里的链接 {len(seed)} 个（可以直接读网页、发图）")
+            notes.append(f"系统提示词 {len(profile.system_prompt or '')} 字")
+            trace.add("context", "组装上下文", detail="\n".join(notes), data={"user_message": user_message})
+
             started = time.monotonic()
-            result = await asyncio.wait_for(provider.generate([*history, user_message], tools), TURN_TIMEOUT_S)
+            result = await asyncio.wait_for(provider.generate([*history, user_message], tools, trace), TURN_TIMEOUT_S)
             latency_ms = int((time.monotonic() - started) * 1000)
         except Exception as e:
             log.exception("模型调用失败（turn %s）", turn_id)
             error = f"{type(e).__name__}: {e}"
+            if isinstance(e, TimeoutError) and not str(e):
+                error = f"TimeoutError: 整轮超过 {TURN_TIMEOUT_S} 秒，已放弃"
+            trace.add("error", "这一轮失败", error=error)
+            await self._save_trace(turn_id, trace)
             await db.conversations.mark_turn(turn_id, status="failed", last_error=error[:2000], finished_at=now_ms())
             await db.inbox.finish(inbox.id, "failed", error=error[:2000], conversation_id=ingested.conversation_id)
             await db.events.add("error", "provider", f"模型调用失败：{error[:200]}", account_id=msg.account_id)
@@ -339,6 +372,7 @@ class AgentEngine:
 
         window = channel.reply_window(msg.scene)
         limit = min(int(max_chunks or window.max_replies), window.max_replies)
+        watch = Stopwatch()
         if result.reply_parts is not None:
             reply = await compose_parts(
                 result.reply_parts,
@@ -349,6 +383,13 @@ class AgentEngine:
             )
         else:
             reply = compose_text(result.text, limit, fallback=EMPTY_REPLY_TEXT)
+        trace.add(
+            "compose",
+            f"回复编排：{len(reply.chunks)} 段",
+            detail="\n".join([*reply.notes, *(_chunk_line(i, c) for i, c in enumerate(reply.chunks, 1))]),
+            started_at=watch.started_at,
+            duration_ms=watch.ms,
+        )
         # 拒答时没有正常内容，这一轮不进提供商历史（空的 assistant 消息会让下一次请求报错）。
         provider_messages = [] if result.refused else [*prefix, stored_user, *result.raw_messages]
         await db.conversations.save_turn_result(
@@ -367,6 +408,7 @@ class AgentEngine:
             deadline=inbox.reply_deadline,
             turn_fields={
                 "status": "refused" if result.refused else "succeeded",
+                "last_error": None,
                 "model": result.model,
                 "stop_reason": result.stop_reason,
                 "input_tokens": result.usage.input_tokens,
@@ -381,6 +423,7 @@ class AgentEngine:
             },
         )
         self._on_outbox()
+        await self._save_trace(turn_id, trace)
         await self._bus.publish(
             BusEvent(
                 "turn.done",
@@ -397,10 +440,27 @@ class AgentEngine:
             # 回复已经交给发件箱在发了；压缩在这之后做，只会让这个会话的下一条消息多等一会儿。
             try:
                 await self._maybe_compact(
-                    provider, [*history, stored_user, *result.raw_messages], result, msg, ingested, profile, limits, tools
+                    provider,
+                    [*history, stored_user, *result.raw_messages],
+                    result,
+                    msg,
+                    ingested,
+                    profile,
+                    limits,
+                    tools,
+                    trace,
                 )
-            except Exception:
+            except Exception as e:
                 log.exception("历史压缩失败（会话 %s）", ingested.conversation_id)
+                trace.add("error", "历史压缩失败", error=f"{type(e).__name__}: {e}")
+            await self._save_trace(turn_id, trace)
+
+    async def _save_trace(self, turn_id: int, trace: Trace) -> None:
+        """处理过程只是给人看的，写不进去不影响回复。"""
+        try:
+            await self._db.traces.add_steps(turn_id, trace.drain())
+        except Exception:
+            log.exception("保存问答过程失败（turn %s）", turn_id)
 
     async def _maybe_compact(
         self,
@@ -412,6 +472,7 @@ class AgentEngine:
         profile: Any,
         limits: ContextLimits,
         tools: Toolset,
+        trace: Trace,
     ) -> None:
         """这一轮之后历史太长了就压缩：较早的部分换成摘要，最近几轮原文保留，开始新一段。"""
         # 下一次请求会带上最后一次请求的输入和它的回复；工具循环里前面几次请求的用量不能加起来算。
@@ -425,6 +486,7 @@ class AgentEngine:
         cut = starts[-keep] if keep else len(history)
         older, recent = history[:cut], history[cut:]
 
+        watch = Stopwatch()
         compacted = await provider.compact(older, tools) if provider.capabilities().compaction else None
         if compacted is not None:
             new_history, summary = [compacted.message, *recent], compacted.summary
@@ -444,8 +506,6 @@ class AgentEngine:
         )
         if compacted is not None:
             await db.conversations.add_turn_cost(ingested.turn_id, compacted.cost_usd)
-        if epoch is None:
-            return
         reason = f"预计 {next_tokens} token" if too_long else f"已有 {len(starts)} 轮"
         if compacted is not None:
             text = f"会话历史{reason}，较早的 {len(starts) - keep} 轮已压缩成摘要，保留最近 {keep} 轮原文"
@@ -453,6 +513,24 @@ class AgentEngine:
         else:
             text = f"会话历史{reason}，当前模型没有压缩出摘要，只保留最近 {keep} 轮"
             level = "warning"
+        detail = [text]
+        if compacted is not None:
+            u = compacted.usage
+            detail.append(
+                f"输入 {u.input_tokens + u.cache_read_tokens} token · 输出 {u.output_tokens} token · ${compacted.cost_usd:.4f}"
+            )
+        if epoch is None:
+            detail.append("会话在这期间被清空或已经换了一段，没有开始新的一段")
+        trace.add(
+            "compaction",
+            f"压缩历史：{reason}",
+            detail="\n".join(detail),
+            data={"summary": summary} if summary else None,
+            started_at=watch.started_at,
+            duration_ms=watch.ms,
+        )
+        if epoch is None:
+            return
         await db.events.add(level, "history", text, account_id=msg.account_id)
         await self._bus.publish(
             BusEvent(
@@ -478,6 +556,14 @@ def trim_pending(pending: Sequence[NeutralMessage], max_messages: int, max_chars
     if omitted:
         kept.insert(0, NeutralMessage("user", f"（省略了更早的 {omitted} 条群消息）"))
     return kept
+
+
+def _chunk_line(n: int, chunk: OutboxChunk) -> str:
+    if chunk.card:
+        return f"{n}. 卡片：{chunk.card.get('title')}（{chunk.card.get('url')}）"
+    if chunk.image_url:
+        return f"{n}. 图片：{chunk.image_url}"
+    return f"{n}. 文字：{chunk.content}"
 
 
 def turn_starts(history: Sequence[Any]) -> list[int]:

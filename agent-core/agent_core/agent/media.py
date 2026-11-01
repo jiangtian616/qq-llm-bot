@@ -76,6 +76,8 @@ class TurnMedia:
     texts: list[str]
     """每一行消息加上附件标记后的文字，和传入的消息一一对应。"""
     images: tuple[ImageData, ...]
+    failed: tuple[str, ...] = ()
+    """没能下载的图片：「文件名或链接：原因」。"""
 
 
 class MediaFetcher:
@@ -110,10 +112,12 @@ class MediaFetcher:
 
         labels: dict[tuple[int, int], str] = {}
         images: list[ImageData] = []
+        failed: list[str] = []
         for (i, j, a), result in zip(wanted, results, strict=True):
             if isinstance(result, BaseException):
                 log.warning("图片下载失败（%s）：%s", a.filename or a.url, result)
                 labels[(i, j)] = "[图片（没能读取）]"
+                failed.append(f"{a.filename or a.url}：{type(result).__name__}: {result}")
             else:
                 images.append(result)
                 labels[(i, j)] = f"[图片{len(images)}]"
@@ -121,4 +125,4 @@ class MediaFetcher:
             with_notes(m.content, [labels.get((i, j)) or attachment_note(a) for j, a in enumerate(m.attachments)])
             for i, m in enumerate(lines)
         ]
-        return TurnMedia(texts, tuple(images))
+        return TurnMedia(texts, tuple(images), tuple(failed))

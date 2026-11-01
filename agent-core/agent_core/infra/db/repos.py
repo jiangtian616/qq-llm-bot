@@ -24,11 +24,13 @@ from agent_core.infra.db.models import (
     InboxEvent,
     Message,
     Outbox,
+    OutboxAttempt,
     ProviderMessage,
     ProviderProfile,
     Setting,
     SystemEvent,
     Turn,
+    TurnStep,
 )
 
 
@@ -879,6 +881,93 @@ def _missing_turns(
             missing += [*asked, m]
         asked = []
     return missing
+
+
+# ---------- 处理过程 ----------
+
+
+class TraceRepo(_Repo):
+    """问答过程（turn_steps）和发件箱的发送尝试（outbox_attempts）：只追加，跟着问答和发件箱一起清理。"""
+
+    async def add_steps(self, turn_id: int, steps: Sequence[Any]) -> None:
+        """steps 是 core.trace.TraceStep；序号接着这一轮已有的往后排（重试时同一轮会再处理一次）。"""
+        if not steps:
+            return
+        async with self._sessions.begin() as s:
+            last = await s.scalar(select(func.coalesce(func.max(TurnStep.seq), 0)).where(TurnStep.turn_id == turn_id))
+            for i, step in enumerate(steps, start=(last or 0) + 1):
+                s.add(
+                    TurnStep(
+                        turn_id=turn_id,
+                        seq=i,
+                        kind=step.kind,
+                        title=step.title,
+                        detail=step.detail,
+                        data_json=None if step.data is None else json.dumps(step.data, ensure_ascii=False),
+                        error=step.error,
+                        started_at=step.started_at,
+                        duration_ms=step.duration_ms,
+                    )
+                )
+
+    async def steps(self, turn_id: int) -> list[TurnStep]:
+        async with self._sessions() as s:
+            return list(
+                (await s.scalars(select(TurnStep).where(TurnStep.turn_id == turn_id).order_by(TurnStep.seq))).all()
+            )
+
+    async def add_attempt(self, outbox_id: int, **fields: Any) -> None:
+        async with self._sessions.begin() as s:
+            s.add(OutboxAttempt(outbox_id=outbox_id, **fields))
+
+    async def attempts(self, outbox_id: int) -> list[OutboxAttempt]:
+        async with self._sessions() as s:
+            return list(
+                (
+                    await s.scalars(
+                        select(OutboxAttempt).where(OutboxAttempt.outbox_id == outbox_id).order_by(OutboxAttempt.id)
+                    )
+                ).all()
+            )
+
+    async def turns(self, *, status: str | None, limit: int) -> list[tuple[Turn, Conversation, Message]]:
+        """问答列表，新的在前；带会话和触发它的那条消息。"""
+        stmt = (
+            select(Turn, Conversation, Message)
+            .join(Conversation, Turn.conversation_id == Conversation.id)
+            .join(Message, Turn.inbound_message_id == Message.id)
+            .order_by(Turn.id.desc())
+            .limit(limit)
+        )
+        if status:
+            stmt = stmt.where(Turn.status == status)
+        async with self._sessions() as s:
+            return [(t, c, m) for t, c, m in (await s.execute(stmt)).all()]
+
+    async def turn(self, turn_id: int) -> tuple[Turn, Conversation, Message, Contact | None] | None:
+        stmt = (
+            select(Turn, Conversation, Message, Contact)
+            .join(Conversation, Turn.conversation_id == Conversation.id)
+            .join(Message, Turn.inbound_message_id == Message.id)
+            .outerjoin(Contact, Message.sender_contact_id == Contact.id)
+            .where(Turn.id == turn_id)
+        )
+        async with self._sessions() as s:
+            row = (await s.execute(stmt)).first()
+        return None if row is None else (row[0], row[1], row[2], row[3])
+
+    async def turn_counts(self) -> dict[str, int]:
+        async with self._sessions() as s:
+            rows = (await s.execute(select(Turn.status, func.count()).group_by(Turn.status))).all()
+        return {status: n for status, n in rows}
+
+    async def turn_for_inbox(self, inbox_id: int) -> int | None:
+        async with self._sessions() as s:
+            return await s.scalar(select(Turn.id).where(Turn.inbox_id == inbox_id).order_by(Turn.id.desc()).limit(1))
+
+    async def outbox_for_turn(self, turn_id: int) -> list[Outbox]:
+        async with self._sessions() as s:
+            return list((await s.scalars(select(Outbox).where(Outbox.turn_id == turn_id).order_by(Outbox.id))).all())
 
 
 # ---------- 用量 ----------

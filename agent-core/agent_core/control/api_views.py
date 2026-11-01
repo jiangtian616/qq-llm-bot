@@ -1,4 +1,4 @@
-"""控制接口：会话、消息队列、日志三个页面用的路由。"""
+"""控制接口：会话、消息队列、日志三个页面用的路由，以及问答的处理过程。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from agent_core.control.state import ControlState
 from agent_core.core.bus import BusEvent
 from agent_core.core.clock import now_ms
 from agent_core.core.models import Scene
+from agent_core.infra.db.repos import speaker_label
 
 BOT_STATE_NO_PERMISSION = 11253
 """QQ：群机器人状态接口只对白名单机器人开放。"""
@@ -169,7 +170,12 @@ def build_views_router() -> APIRouter:
         e = await _ctl(request).db.inbox.get(inbox_id)
         if e is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "事件不存在")
-        return {**_inbox_view(e), "content": _content_of(e.raw_json), "raw": _json_or_text(e.raw_json)}
+        return {
+            **_inbox_view(e),
+            "content": _content_of(e.raw_json),
+            "raw": _json_or_text(e.raw_json),
+            "turn_id": await _ctl(request).db.traces.turn_for_inbox(inbox_id),
+        }
 
     @r.post("/queue/inbox/{inbox_id}/retry")
     async def retry_inbox(inbox_id: int, request: Request) -> dict[str, Any]:
@@ -190,7 +196,8 @@ def build_views_router() -> APIRouter:
 
     @r.get("/queue/outbox/{outbox_id}")
     async def outbox_detail(outbox_id: int, request: Request) -> dict[str, Any]:
-        row = await _ctl(request).db.outbox.get(outbox_id)
+        s = _ctl(request)
+        row = await s.db.outbox.get(outbox_id)
         if row is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "回复不存在")
         o, c = row
@@ -205,6 +212,7 @@ def build_views_router() -> APIRouter:
             "platform_message_id": o.platform_message_id,
             "platform_ts": o.platform_ts,
             "ref_idx": o.ref_idx,
+            "attempts_log": [_attempt_view(a) for a in await s.db.traces.attempts(outbox_id)],
         }
 
     @r.post("/queue/outbox/{outbox_id}/retry")
@@ -226,6 +234,44 @@ def build_views_router() -> APIRouter:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, reason)
         await s.bus.publish(BusEvent("queue.changed"))
         return {"status": "cancelled"}
+
+    # ---- 问答过程 ----
+
+    @r.get("/turns")
+    async def list_turns(request: Request, limit: int = 100) -> list[dict[str, Any]]:
+        s = _ctl(request)
+        rows = await s.db.traces.turns(status=request.query_params.get("status"), limit=min(max(limit, 1), 500))
+        return [_turn_view(t, c, m) for t, c, m in rows]
+
+    @r.get("/turns/counts")
+    async def turn_counts(request: Request) -> dict[str, int]:
+        return await _ctl(request).db.traces.turn_counts()
+
+    @r.get("/turns/{turn_id}")
+    async def turn_detail(turn_id: int, request: Request) -> dict[str, Any]:
+        """一次问答的完整过程：提问、每一步（组装上下文、请求模型、搜索、工具、回复编排、压缩）、发出去的几段。"""
+        s = _ctl(request)
+        row = await s.db.traces.turn(turn_id)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "问答不存在（可能已经过期清理）")
+        t, c, m, contact = row
+        return {
+            **_turn_view(t, c, m),
+            "question": m.content,
+            "sender": speaker_label(c.scene, contact.openid, contact.display_name) if contact else None,
+            "steps": [_step_view(x) for x in await s.db.traces.steps(turn_id)],
+            "outbox": [
+                {
+                    "id": o.id,
+                    "status": o.status,
+                    "chunk_index": o.chunk_index,
+                    "chunk_count": o.chunk_count,
+                    "attempts": o.attempts,
+                    "preview": _preview(_outbox_text(json.loads(o.payload_json))),
+                }
+                for o in await s.db.traces.outbox_for_turn(turn_id)
+            ],
+        }
 
     # ---- 日志 ----
 
@@ -286,6 +332,56 @@ def _outbox_view(o: Any, c: Any) -> dict[str, Any]:
         "sent_at": o.sent_at,
         "created_at": o.created_at,
         "preview": _preview(_outbox_text(json.loads(o.payload_json))),
+    }
+
+
+def _turn_view(t: Any, c: Any, m: Any) -> dict[str, Any]:
+    return {
+        "id": t.id,
+        "conversation_id": t.conversation_id,
+        "conversation_label": _conversation_label(c),
+        "inbox_id": t.inbox_id,
+        "status": t.status,
+        "provider": t.provider,
+        "model": t.model,
+        "stop_reason": t.stop_reason,
+        "input_tokens": t.input_tokens,
+        "output_tokens": t.output_tokens,
+        "cache_read_tokens": t.cache_read_tokens,
+        "cache_write_tokens": t.cache_write_tokens,
+        "cost_usd": t.cost_usd,
+        "search_requests": t.search_requests,
+        "tool_rounds": t.tool_rounds,
+        "latency_ms": t.latency_ms,
+        "last_error": t.last_error,
+        "started_at": t.started_at,
+        "finished_at": t.finished_at,
+        "preview": _preview(m.content),
+    }
+
+
+def _step_view(x: Any) -> dict[str, Any]:
+    return {
+        "seq": x.seq,
+        "kind": x.kind,
+        "title": x.title,
+        "detail": x.detail,
+        "data": _json_or_text(x.data_json),
+        "error": x.error,
+        "started_at": x.started_at,
+        "duration_ms": x.duration_ms,
+    }
+
+
+def _attempt_view(a: Any) -> dict[str, Any]:
+    return {
+        "attempt": a.attempt,
+        "result": a.result,
+        "error_code": a.error_code,
+        "error": a.error,
+        "note": a.note,
+        "started_at": a.started_at,
+        "duration_ms": a.duration_ms,
     }
 
 

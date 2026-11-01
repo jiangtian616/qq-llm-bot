@@ -5,6 +5,7 @@ import '../../core/api/models.dart';
 import '../../core/ui/detail_dialog.dart';
 import '../../core/ui/format.dart';
 import '../../core/ui/placeholder_view.dart';
+import '../../core/ui/turn_trace_dialog.dart';
 import 'queue_controller.dart';
 
 const _inboxStatuses = {
@@ -149,9 +150,11 @@ class _InboxTab extends GetView<QueueController> {
         ));
   }
 
-  void _showDetail(BuildContext context, InboxItem e) => showDetailDialog(
-        context,
-        title: '收件箱事件 #${e.id}',
+  void _showDetail(BuildContext context, InboxItem e) {
+    void openTrace(int turnId) => showTurnTraceDialog(context, turnId);
+    showDetailDialog(
+      context,
+      title: '收件箱事件 #${e.id}',
         sections: [
           DetailSection.fields('概要', {
             '类型': _eventTypes[e.eventType] ?? e.eventType,
@@ -165,12 +168,14 @@ class _InboxTab extends GetView<QueueController> {
         load: () async {
           final d = await controller.repository.inboxDetail(e.id);
           return [
+            if (d.turnId case final turnId?) _traceSection(turnId, openTrace),
             DetailSection('消息内容', d.content),
             DetailSection.fields('其它字段', d.extra),
             DetailSection.json('原始事件', d.raw),
           ];
         },
       );
+  }
 }
 
 class _OutboxTab extends GetView<QueueController> {
@@ -212,9 +217,11 @@ class _OutboxTab extends GetView<QueueController> {
         ));
   }
 
-  void _showDetail(BuildContext context, OutboxItem o) => showDetailDialog(
-        context,
-        title: '发件箱回复 #${o.id}',
+  void _showDetail(BuildContext context, OutboxItem o) {
+    void openTrace(int turnId) => showTurnTraceDialog(context, turnId);
+    showDetailDialog(
+      context,
+      title: '发件箱回复 #${o.id}',
         sections: [
           DetailSection.fields('概要', {
             '会话': o.conversationLabel,
@@ -232,12 +239,16 @@ class _OutboxTab extends GetView<QueueController> {
         load: () async {
           final d = await controller.repository.outboxDetail(o.id);
           return [
+            if (d.turnId case final turnId?) _traceSection(turnId, openTrace),
             DetailSection('回复内容', d.content),
+            if (d.attempts.isNotEmpty)
+              DetailSection('发送记录（${d.attempts.length} 次）', [for (final a in d.attempts) _attemptLine(a)].join('\n')),
             DetailSection.fields('平台信息', d.extra),
             DetailSection.json('消息体', d.raw),
           ];
         },
       );
+  }
 
   static String _outboxMeta(OutboxItem o) => [
         o.conversationLabel,
@@ -273,6 +284,29 @@ class _StatusChip extends StatelessWidget {
     );
   }
 }
+
+const _attemptResults = {
+  'sent': '已发送',
+  'already_sent': '已发送（平台去重）',
+  'retry': '失败，稍后重试',
+  'failed': '失败',
+  'expired': '已过期',
+};
+
+DetailSection _traceSection(int turnId, void Function(int) open) => DetailSection(
+      '处理过程',
+      '问答 #$turnId：组装上下文、请求模型、联网搜索、工具调用、回复编排，每一步的内容和耗时',
+      action: (label: '查看', onPressed: () => open(turnId)),
+    );
+
+String _attemptLine(OutboxAttempt a) => [
+      '第 ${a.attempt} 次',
+      formatTime(a.startedAt),
+      _attemptResults[a.result] ?? a.result,
+      if (a.error != null) '${a.errorCode != null ? '[${a.errorCode}] ' : ''}${a.error}',
+      if (a.note != null) a.note!,
+      '耗时 ${formatMs(a.durationMs)}',
+    ].join(' · ');
 
 void _report(String? error) {
   if (error != null) Get.snackbar('操作失败', error, snackPosition: SnackPosition.BOTTOM, maxWidth: 480);

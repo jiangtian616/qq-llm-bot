@@ -9,6 +9,7 @@ from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.network import DIRECT, Proxy
 from agent_core.core.ports.secrets import SecretReader
 from agent_core.core.ports.tool import Tool, Toolset
+from agent_core.core.trace import Trace
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,11 +120,14 @@ class LLMProvider(abc.ABC):
         """从中立历史构造该提供商的消息列表（只在没有该提供商原始历史时使用）。"""
 
     @abc.abstractmethod
-    async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
+    async def generate(
+        self, messages: Sequence[Any], tools: Toolset | None = None, trace: Trace | None = None
+    ) -> GenerateResult:
         """messages 是该提供商格式的完整历史，最后一条是本轮 user 消息。
 
         有工具时在这里跑工具循环：模型调用本地工具就执行、把结果交回去接着请求，直到模型不再调用工具，
         或者调用了 terminal 的工具（回复工具）。只有 capabilities().tools 为真的提供商会收到本地工具。
+        trace 记下处理过程：每次请求（request）、服务端搜索（search）、本地工具（tool）、回复工具（reply）各一步。
         """
 
     def search_tool(self, max_uses: int) -> Tool | None:

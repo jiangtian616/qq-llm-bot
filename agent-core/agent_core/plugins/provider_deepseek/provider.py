@@ -39,6 +39,7 @@ import aiohttp
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
 from agent_core.core.ports.tool import Tool, Toolset, ToolResult
+from agent_core.core.trace import Stopwatch, Trace, short, timed
 from agent_core.infra.http import client_session
 from agent_core.plugins.provider_deepseek.catalog import DEFAULT_MODEL, PRICES, SPEC, is_peak
 
@@ -236,24 +237,48 @@ class DeepSeekProvider(LLMProvider):
             body["reasoning_effort"] = self.effort
         return body
 
-    async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
+    async def generate(
+        self, messages: Sequence[Any], tools: Toolset | None = None, trace: Trace | None = None
+    ) -> GenerateResult:
         tools = tools or Toolset()
+        trace = trace or Trace()
         convo = list(messages)
         produced: list[Any] = []
         usage, cost, searches, rounds = Usage(), 0.0, 0, 0
         links = set(tools.seed_links)
         rejected = False  # 回复校验不过已经交回模型重来过一次
         while True:
-            data, step = await self._chat(convo, tools)
+            watch = Stopwatch()
+            try:
+                data, step = await self._chat(convo, tools)
+            except Exception as e:
+                trace.add(
+                    "request",
+                    "请求失败",
+                    detail=f"历史 {len(convo)} 条消息 · 工具 {_tool_names(tools)}",
+                    error=f"{type(e).__name__}: {e}",
+                    started_at=watch.started_at,
+                    duration_ms=watch.ms,
+                )
+                raise
             choice = (data.get("choices") or [{}])[0]
             message = choice.get("message") or {}
             finish = choice.get("finish_reason")
+            step_cost = estimate_cost(self.model, step)
+            trace.add(
+                "request",
+                f"请求模型 · {finish}",
+                detail=self._response_detail(data, message, step, step_cost, len(convo), tools),
+                data={"response": message},
+                started_at=watch.started_at,
+                duration_ms=watch.ms,
+            )
             # 原样保存接口返回的 message（包括 reasoning_content、tool_calls），之后追加进历史，不改写。
             raw_assistant = {**message, "role": "assistant"}
             convo.append(raw_assistant)
             produced.append(raw_assistant)
             usage = _add(usage, step)
-            cost += estimate_cost(self.model, step)
+            cost += step_cost
             result = partial(
                 GenerateResult,
                 usage=usage,
@@ -267,6 +292,7 @@ class DeepSeekProvider(LLMProvider):
             )
             if finish == "content_filter":
                 # 输出被内容过滤截掉了，没有能用的正文。
+                trace.add("note", "输出被内容过滤截掉，回复固定话术")
                 return result(text=self.refusal_reply, stop_reason=finish, refused=True)
             calls = [c for c in message.get("tool_calls") or [] if isinstance(c, dict)]
             if not calls:
@@ -277,7 +303,9 @@ class DeepSeekProvider(LLMProvider):
                 arguments = _call_arguments(terminal)
                 tool = tools.find(_call_name(terminal))
                 problem = tool.validate(arguments, frozenset(links)) if tool is not None else None
-                if problem is None or rejected or rounds >= tools.max_rounds:
+                accepted = problem is None or rejected or rounds >= tools.max_rounds
+                trace.reply(arguments, problem, accepted=accepted)
+                if accepted:
                     # 回复工具：参数就是回复，不再请求模型；每个工具调用都要有对应的 tool 消息，历史才能接着用。
                     produced += _tool_messages(calls, {terminal["id"]: ToolResult(REPLY_ACK)}, SKIPPED_BY_REPLY)
                     parts = arguments.get("parts")
@@ -294,11 +322,15 @@ class DeepSeekProvider(LLMProvider):
                 continue
             if rounds >= tools.max_rounds:
                 log.warning("工具调用超过 %s 轮，结束这一轮", tools.max_rounds)
+                trace.add("note", f"工具调用到上限（{tools.max_rounds} 轮），结束这一轮")
                 produced += _tool_messages(calls, {}, SKIPPED_BY_LIMIT)
                 return result(text=message.get("content") or "", stop_reason="tool_rounds_exceeded")
             rounds += 1
             seen = frozenset(links)
-            outcomes = await asyncio.gather(*(_run_tool(tools, c, seen) for c in calls))
+            runs = await asyncio.gather(*(timed(_run_tool(tools, c, seen)) for c in calls))
+            outcomes = [outcome for outcome, _ in runs]
+            for call, (outcome, run_watch) in zip(calls, runs, strict=True):
+                trace.tool(_call_name(call), _call_arguments(call), outcome, run_watch)
             for outcome in outcomes:
                 links.update(outcome.links)
                 cost += outcome.cost_usd
@@ -306,6 +338,25 @@ class DeepSeekProvider(LLMProvider):
             replies = _tool_messages(calls, {c["id"]: r for c, r in zip(calls, outcomes, strict=True)}, "")
             convo += replies
             produced += replies
+
+    def _response_detail(
+        self, data: dict[str, Any], message: dict[str, Any], step: Usage, cost: float, history: int, tools: Toolset
+    ) -> str:
+        """一次请求的摘要：参数、用量，以及模型这次输出的思考、文字和工具调用。"""
+        lines = [
+            f"模型 {data.get('model') or self.model} · effort {self.effort or '默认'} · 历史 {history} 条消息"
+            f" · 工具 {_tool_names(tools)}" + ("" if self._strict else "（非 strict）"),
+            f"输入 {step.input_tokens + step.cache_read_tokens} token（缓存命中 {step.cache_read_tokens}）"
+            f" · 输出 {step.output_tokens} token · ${cost:.4f}",
+        ]
+        if message.get("reasoning_content"):
+            lines.append(f"[思考] {message['reasoning_content']}")
+        if message.get("content"):
+            lines.append(f"[文字] {message['content']}")
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict):
+                lines.append(f"[调用 {_call_name(call)}] {short(_call_arguments(call), 200)}")
+        return "\n".join(lines)
 
     async def _chat(self, messages: Sequence[Any], tools: Toolset) -> tuple[dict[str, Any], Usage]:
         """strict 模式要走 /beta 地址（Beta 功能）；/beta 请求失败（不是限流、服务器故障）就关掉 strict 改走普通地址，之后都不再用。"""
@@ -400,6 +451,10 @@ class DeepSeekProvider(LLMProvider):
     async def aclose(self) -> None:
         if self._session is not None:
             await self._session.close()
+
+
+def _tool_names(tools: Toolset) -> str:
+    return "、".join(t.name for t in tools.local) or "无"
 
 
 def _function(tool: Tool, *, strict: bool) -> dict[str, Any]:

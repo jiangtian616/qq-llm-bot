@@ -152,6 +152,19 @@ class CoreApiClient {
     return (inbox: counts(json['inbox']), outbox: counts(json['outbox']));
   }
 
+  // ---- 问答过程 ----
+
+  Future<List<TurnItem>> listTurns({String? status}) async => [
+        for (final t in await _get('/turns', {'status': ?status}) as List<dynamic>)
+          TurnItem.fromJson(t as Map<String, dynamic>),
+      ];
+
+  /// 各状态的问答数量。
+  Future<Map<String, int>> turnCounts() async =>
+      (await _get('/turns/counts') as Map<String, dynamic>).map((k, v) => MapEntry(k, v as int));
+
+  Future<TurnDetail> turnDetail(int id) async => TurnDetail.fromJson(await _get('/turns/$id') as Map<String, dynamic>);
+
   // ---- 用量与维护 ----
 
   Future<UsageToday> usageToday() async => UsageToday.fromJson(await _get('/usage/today') as Map<String, dynamic>);

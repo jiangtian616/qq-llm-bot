@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../core/api/models.dart';
 import '../../core/ui/detail_dialog.dart';
 import '../../core/ui/format.dart';
 import '../../core/ui/placeholder_view.dart';
+import '../../core/ui/turn_trace_dialog.dart';
 import 'logs_controller.dart';
 
 const _levels = {'info': '信息', 'warning': '警告', 'error': '错误'};
@@ -17,6 +19,7 @@ const _categories = {
   'cleanup': '清理',
   'budget': '预算',
   'rate_limit': '限频',
+  'history': '历史',
 };
 
 class LogsPage extends GetView<LogsController> {
@@ -33,7 +36,7 @@ class LogsPage extends GetView<LogsController> {
         );
       }
       return DefaultTabController(
-        length: 2,
+        length: 3,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -52,12 +55,94 @@ class LogsPage extends GetView<LogsController> {
                 padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
                 child: Text(controller.error.value!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
               ),
-            const TabBar(tabs: [Tab(text: '运行事件'), Tab(text: '服务日志')]),
-            const Expanded(child: TabBarView(children: [_EventsTab(), _LogTab()])),
+            const TabBar(tabs: [Tab(text: '问答'), Tab(text: '运行事件'), Tab(text: '服务日志')]),
+            const Expanded(child: TabBarView(children: [_TurnsTab(), _EventsTab(), _LogTab()])),
           ],
         ),
       );
     });
+  }
+}
+
+class _TurnsTab extends GetView<LogsController> {
+  const _TurnsTab();
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('全部'),
+                    selected: controller.turnStatus.value == null,
+                    onSelected: (_) => controller.turnStatus.value = null,
+                  ),
+                  for (final e in turnStatuses.entries)
+                    ChoiceChip(
+                      label: Text('${e.value} ${controller.turnCounts[e.key] ?? 0}'),
+                      selected: controller.turnStatus.value == e.key,
+                      onSelected: (_) => controller.turnStatus.value = e.key,
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Text('每次调用模型的完整过程：组装上下文、请求模型、联网搜索、工具调用、回复编排。点开查看每一步。',
+                  style: Theme.of(context).textTheme.bodySmall),
+            ),
+            Expanded(
+              child: controller.turns.isEmpty
+                  ? const Center(child: Text('没有问答'))
+                  : ListView(
+                      children: [
+                        for (final t in controller.turns)
+                          ListTile(
+                            dense: true,
+                            leading: _TurnStatusChip(status: t.status),
+                            title: Text(t.preview.isEmpty ? '（空消息）' : t.preview, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            subtitle: Text(_turnMeta(t), maxLines: 2, overflow: TextOverflow.ellipsis),
+                            onTap: () => showTurnTraceDialog(context, t.id),
+                          ),
+                      ],
+                    ),
+            ),
+          ],
+        ));
+  }
+
+  static String _turnMeta(TurnItem t) => [
+        formatTime(t.startedAt),
+        t.conversationLabel,
+        t.model,
+        '输入 ${t.inputTokens + t.cacheReadTokens} / 输出 ${t.outputTokens} token',
+        formatUsd(t.costUsd),
+        if (t.searchRequests > 0) '联网搜索 ${t.searchRequests} 次',
+        if (t.toolRounds > 0) '工具 ${t.toolRounds} 轮',
+        if (t.latencyMs != null) formatMs(t.latencyMs!),
+        if (t.lastError != null && t.status == 'failed') t.lastError!,
+      ].join(' · ');
+}
+
+class _TurnStatusChip extends StatelessWidget {
+  const _TurnStatusChip({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = turnStatusColor(status);
+    return Container(
+      width: 56,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
+      child: Text(turnStatuses[status] ?? status, textAlign: TextAlign.center, style: TextStyle(color: color, fontSize: 12)),
+    );
   }
 }
 

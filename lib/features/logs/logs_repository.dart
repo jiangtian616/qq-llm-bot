@@ -4,7 +4,7 @@ import '../../core/api/core_api_client.dart';
 import '../../core/api/models.dart';
 import '../../core/connection/connection_store.dart';
 
-/// 日志页的数据来源：运行事件（system_events 表）和核心服务的日志文件。
+/// 日志页的数据来源：问答过程（turns、turn_steps 表）、运行事件（system_events 表）和核心服务的日志文件。
 class LogsRepository {
   LogsRepository({ConnectionStore? store}) : store = store ?? Get.find<ConnectionStore>();
 
@@ -21,4 +21,6 @@ class LogsRepository {
 
   Future<List<SystemEventItem>> systemEvents(String? level) => _api.systemEvents(level: level);
   Future<({String file, List<String> lines})> logTail() => _api.logTail();
+  Future<List<TurnItem>> turns(String? status) => _api.listTurns(status: status);
+  Future<Map<String, int>> turnCounts() => _api.turnCounts();
 }

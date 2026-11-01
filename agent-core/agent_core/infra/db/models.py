@@ -1,4 +1,4 @@
-"""SQLite 表结构，共 13 张表，分四组：账号与连接、会话与历史、问答与发送、配置与运行。
+"""SQLite 表结构，共 15 张表，分四组：账号与连接、会话与历史、问答与发送、配置与运行。
 
 约定：时间字段存 UTC 毫秒时间戳（INTEGER），平台原始时间另存文本；JSON 存 TEXT；布尔值存 0/1；
 密钥不入库，只存系统密钥库里的键名。改了这里要用 Alembic 生成新的迁移。
@@ -248,6 +248,27 @@ class Turn(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[int | None] = mapped_column(Integer)
     finished_at: Mapped[int | None] = mapped_column(Integer)
+    # 触发这一轮的收件箱事件。不加外键：收件箱事件比问答清理得早，留着悬空的编号查不到就算了。
+    inbox_id: Mapped[int | None] = mapped_column(Integer, index=True)
+
+
+class TurnStep(Base):
+    """问答过程：组装上下文、每次请求模型、每次工具调用、回复编排、历史压缩各一行（core/trace.py）。"""
+
+    __tablename__ = "turn_steps"
+    __table_args__ = (Index(None, "turn_id", "seq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    turn_id: Mapped[int] = mapped_column(ForeignKey("turns.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)
+    # context / request / search / tool / reply / compose / compaction / note / error
+    kind: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    data_json: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
 
 
 class Outbox(Base):
@@ -283,6 +304,24 @@ class Outbox(Base):
     ref_idx: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[int] = mapped_column(Integer)
+
+
+class OutboxAttempt(Base):
+    """发件箱每一次发送尝试：结果、错误码、耗时，以及卡片被拒改发文字这类说明。"""
+
+    __tablename__ = "outbox_attempts"
+    __table_args__ = (Index(None, "outbox_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    outbox_id: Mapped[int] = mapped_column(ForeignKey("outbox.id", ondelete="CASCADE"))
+    attempt: Mapped[int] = mapped_column(Integer)
+    # sent / already_sent / retry / failed / expired
+    result: Mapped[str] = mapped_column(Text)
+    error_code: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[int] = mapped_column(Integer)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 # ---------- 配置与运行 ----------
@@ -331,7 +370,9 @@ EXPECTED_TABLES = frozenset(
         "provider_messages",
         "provider_profiles",
         "turns",
+        "turn_steps",
         "outbox",
+        "outbox_attempts",
         "settings",
         "system_events",
     }

@@ -43,6 +43,7 @@ from agent_core.core.ports.provider import (
     ProviderSpec,
 )
 from agent_core.core.ports.tool import Toolset, ToolResult
+from agent_core.core.trace import Stopwatch, Trace, short, timed
 from agent_core.plugins.provider_claude.catalog import (
     COMPACTION_MODELS,
     DEFAULT_MODEL,
@@ -177,6 +178,44 @@ def _final_text(content: Sequence[Any]) -> str:
     return "".join(texts)
 
 
+def _tool_names(tools: Toolset) -> str:
+    return "、".join([t.name for t in tools.server] + [t.name for t in tools.local]) or "无"
+
+
+def _response_detail(response: Any, step: Usage, cost: float, searches: int, history: int, tools: Toolset, effort: str | None) -> str:
+    """一次请求的摘要：参数、用量，以及模型这次输出的思考、文字和工具调用。"""
+    lines = [
+        f"模型 {response.model} · effort {effort or '默认'} · 历史 {history} 条消息 · 工具 {_tool_names(tools)}",
+        f"输入 {step.input_tokens} token（缓存读 {step.cache_read_tokens}，缓存写 {step.cache_write_tokens}）"
+        f" · 输出 {step.output_tokens} token · ${cost:.4f}" + (f" · 联网搜索 {searches} 次" if searches else ""),
+    ]
+    for block in response.content:
+        if block.type == "thinking":
+            lines.append(f"[思考] {block.thinking}")
+        elif block.type == "text" and block.text.strip():
+            lines.append(f"[文字] {block.text}")
+        elif block.type in ("tool_use", "server_tool_use"):
+            lines.append(f"[调用 {block.name}] {short(block.input, 200)}")
+    return "\n".join(lines)
+
+
+def _trace_searches(trace: Trace, content: Sequence[Any], queries: dict[str, str]) -> None:
+    """服务端搜索：每个搜索结果记一步。暂停（pause_turn）时结果在下一次响应里，queries 跨请求记着搜索词。"""
+    for block in content:
+        if block.type == "server_tool_use":
+            queries[block.id] = str((block.input or {}).get("query") or "") if isinstance(block.input, dict) else ""
+        elif block.type == "web_search_tool_result":
+            title = f"联网搜索：{queries.get(block.tool_use_id, '')}"
+            if isinstance(block.content, list):
+                lines = [
+                    f"· {r.title}\n  {r.url}" + (f"（{r.page_age}）" if getattr(r, "page_age", None) else "")
+                    for r in block.content
+                ]
+                trace.add("search", title, detail="\n".join(lines) or "没有结果")
+            else:
+                trace.add("search", title, error=f"搜索失败：{getattr(block.content, 'error_code', block.content)}")
+
+
 def _search_result_links(content: Sequence[Any]) -> list[str]:
     """服务端搜索结果里的网页地址。"""
     links: list[str] = []
@@ -286,8 +325,12 @@ class ClaudeProvider(LLMProvider):
             messages.append({"role": m.role, "content": content})
         return messages
 
-    async def generate(self, messages: Sequence[Any], tools: Toolset | None = None) -> GenerateResult:
+    async def generate(
+        self, messages: Sequence[Any], tools: Toolset | None = None, trace: Trace | None = None
+    ) -> GenerateResult:
         tools = tools or Toolset()
+        trace = trace or Trace()
+        queries: dict[str, str] = {}
         convo = list(messages)
         # 最后一条是本轮 user 消息；它之后、本轮循环里的 assistant 消息，思考块要原样带回去。
         turn_start = len(convo) - 1
@@ -296,7 +339,20 @@ class ClaudeProvider(LLMProvider):
         links = set(tools.seed_links)
         rejected = False  # 回复校验不过已经交回模型重来过一次
         while True:
-            response = await self._create(convo, tools, keep_thinking_from=turn_start)
+            watch = Stopwatch()
+            try:
+                response = await self._create(convo, tools, keep_thinking_from=turn_start)
+            except Exception as e:
+                trace.add(
+                    "request",
+                    "请求失败",
+                    detail=f"历史 {len(convo)} 条消息 · 工具 {_tool_names(tools)}",
+                    error=f"{type(e).__name__}: {e}",
+                    started_at=watch.started_at,
+                    duration_ms=watch.ms,
+                )
+                raise
+            history_len = len(convo)
             # 原样保存完整 content，下一轮直接追加进历史，不改写。
             raw_assistant = {"role": "assistant", "content": [block.to_dict() for block in response.content]}
             convo.append(raw_assistant)
@@ -306,7 +362,17 @@ class ClaudeProvider(LLMProvider):
             usage = _add(usage, step)
             step_searches = _web_searches(response)
             searches += step_searches
-            cost += estimate_cost(self.model, step) + step_searches * WEB_SEARCH_PRICE
+            step_cost = estimate_cost(self.model, step) + step_searches * WEB_SEARCH_PRICE
+            cost += step_cost
+            trace.add(
+                "request",
+                f"请求模型 · {response.stop_reason}",
+                detail=_response_detail(response, step, step_cost, step_searches, history_len, tools, self.effort),
+                data={"response": raw_assistant["content"]},
+                started_at=watch.started_at,
+                duration_ms=watch.ms,
+            )
+            _trace_searches(trace, response.content, queries)
             result = partial(
                 GenerateResult,
                 usage=usage,
@@ -319,6 +385,7 @@ class ClaudeProvider(LLMProvider):
                 context_tokens=step.input_tokens + step.cache_read_tokens + step.cache_write_tokens + step.output_tokens,
             )
             if response.stop_reason == "refusal":
+                trace.add("note", "模型拒答，回复固定话术", data=response.stop_details.to_dict() if response.stop_details else None)
                 return result(
                     text=self.refusal_reply,
                     stop_reason="refusal",
@@ -334,7 +401,9 @@ class ClaudeProvider(LLMProvider):
                 arguments = terminal.input if isinstance(terminal.input, dict) else {}
                 tool = tools.find(terminal.name)
                 problem = tool.validate(arguments, frozenset(links)) if tool is not None else None
-                if problem is None or rejected or rounds >= tools.max_rounds:
+                accepted = problem is None or rejected or rounds >= tools.max_rounds
+                trace.reply(arguments, problem, accepted=accepted)
+                if accepted:
                     # 回复工具：参数就是回复，不再请求模型。所有工具调用都要有结果，历史才能接着用（压缩也要求这样）。
                     # 重来过一次还不合规的段，由回复编排丢掉。
                     produced.append(_tool_results(calls, {terminal.id: ToolResult(REPLY_ACK)}, SKIPPED_BY_REPLY))
@@ -355,6 +424,7 @@ class ClaudeProvider(LLMProvider):
                 continue
             if rounds >= tools.max_rounds:
                 log.warning("工具调用超过 %s 轮，结束这一轮", tools.max_rounds)
+                trace.add("note", f"工具调用到上限（{tools.max_rounds} 轮），结束这一轮")
                 if calls:
                     produced.append(_tool_results(calls, {}, SKIPPED_BY_LIMIT))
                 return result(text=_final_text(response.content), stop_reason="tool_rounds_exceeded")
@@ -362,7 +432,10 @@ class ClaudeProvider(LLMProvider):
             if calls:
                 # 服务端工具暂停（pause_turn）时没有本地工具调用，原样发回去它就接着做。
                 seen = frozenset(links)
-                outcomes = await asyncio.gather(*(_run_tool(tools, c, seen) for c in calls))
+                runs = await asyncio.gather(*(timed(_run_tool(tools, c, seen)) for c in calls))
+                outcomes = [outcome for outcome, _ in runs]
+                for call, (outcome, run_watch) in zip(calls, runs, strict=True):
+                    trace.tool(call.name, call.input, outcome, run_watch)
                 for outcome in outcomes:
                     links.update(outcome.links)
                     cost += outcome.cost_usd

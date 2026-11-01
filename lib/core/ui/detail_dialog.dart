@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 
 /// 详情对话框里的一段：标题加一段可选中、可复制的文字。
 class DetailSection {
-  const DetailSection(this.label, this.text, {this.monospace = false});
+  const DetailSection(this.label, this.text, {this.monospace = false, this.action});
 
   /// JSON 按缩进排版，等宽显示。字符串原样显示，空值不显示。
   static DetailSection? json(String label, Object? value) {
@@ -23,6 +23,9 @@ class DetailSection {
   final String label;
   final String text;
   final bool monospace;
+
+  /// 标题右边的按钮，比如「查看处理过程」。
+  final ({String label, VoidCallback onPressed})? action;
 }
 
 /// 查看列表里被截断的长文本。sections 立即显示；load 给出的部分（比如要另外请求的完整内容）拉到后接在后面。
@@ -118,6 +121,8 @@ class _Section extends StatelessWidget {
           Row(
             children: [
               Expanded(child: Text(section.label, style: theme.textTheme.labelLarge)),
+              if (section.action case final action?)
+                TextButton(onPressed: action.onPressed, child: Text(action.label)),
               IconButton(
                 tooltip: '复制',
                 iconSize: 16,

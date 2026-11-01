@@ -20,7 +20,7 @@ import logging
 import re
 import sys
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from agent_core.infra.db.repos import OutboxChunk
@@ -50,6 +50,8 @@ class ComposedReply:
     chunks: list[OutboxChunk]
     text: str
     """写进中立历史的文字：换了提供商时从它重建上下文，会话页也显示它。图片和卡片写成「[图片：说明]」「[卡片：标题]」。"""
+    notes: list[str] = field(default_factory=list)
+    """编排时做了什么决定（丢掉了哪段、卡片怎么补全的、去掉了几个网址……），记进问答过程。"""
 
 
 def find_urls(text: str) -> list[str]:
@@ -73,7 +75,10 @@ def compose_text(text: str, max_chunks: int, *, fallback: str) -> ComposedReply:
         segments.append(("text", pieces[i]))
         if i + 2 < len(pieces):
             segments.append(("image", pieces[i + 2], pieces[i + 1]))
-    return ComposedReply(_pack(segments, max_chunks, fallback=fallback), text or fallback)
+    notes = ["没有调用回复工具，按文字回复处理"]
+    if images := len(pieces) // 3:
+        notes.append(f"从文字里认出 {images} 张 Markdown 图片，单独发成图片消息")
+    return ComposedReply(_pack(segments, max_chunks, fallback=fallback, notes=notes), text or fallback, notes)
 
 
 async def compose_parts(
@@ -81,7 +86,8 @@ async def compose_parts(
 ) -> ComposedReply:
     """模型调用了回复工具：逐段校验、补全卡片，不认识或不合规的段丢掉。"""
     pending: list[Any] = []  # 和 parts 对应：Segment，或者要补全的卡片（协程）
-    for part in parts:
+    notes: list[str] = []
+    for n, part in enumerate(parts, 1):
         kind = part.get("type") if isinstance(part, dict) else None
         text = str(part.get("text") or "") if isinstance(part, dict) else ""
         url = part.get("url") if isinstance(part, dict) else None
@@ -90,19 +96,31 @@ async def compose_parts(
         elif kind == "image" and isinstance(url, str) and url in links and url.startswith(("https://", "http://")):
             pending.append(("image", url, clean_text(text)))
         elif kind == "card" and isinstance(url, str) and url in links:
-            pending.append(_card(url, text, part.get("description"), read_page))
+            pending.append(_card(url, text, part.get("description"), read_page, notes))
         else:
             log.warning("丢掉不合规的回复段：%r", part)
+            notes.append(f"丢掉第 {n} 段：{_drop_reason(kind, url, links)}")
     # 几张卡片同时去读网页。
     segments: list[Segment] = list(await asyncio.gather(*(i if asyncio.iscoroutine(i) else _ready(i) for i in pending)))
-    return ComposedReply(_pack(segments, max_chunks, fallback=fallback), _history_text(segments) or fallback)
+    packed = _pack(segments, max_chunks, fallback=fallback, notes=notes)
+    return ComposedReply(packed, _history_text(segments) or fallback, notes)
+
+
+def _drop_reason(kind: Any, url: Any, links: frozenset[str]) -> str:
+    if kind not in ("text", "image", "card"):
+        return f"不认识的类型 {kind!r}"
+    if not isinstance(url, str) or not url:
+        return f"{kind} 没有链接"
+    if url not in links:
+        return f"{kind} 的链接没在这一轮出现过：{url}"
+    return f"{kind} 的链接不是 http(s)：{url}"
 
 
 async def _ready(segment: Segment) -> Segment:
     return segment
 
 
-async def _card(url: str, title: str, description: Any, read_page: PageReader) -> Segment:
+async def _card(url: str, title: str, description: Any, read_page: PageReader, notes: list[str]) -> Segment:
     """补全一张卡片；拿不到封面（或网址不是 https）就退回成一段文字，只有标题。"""
     title = clean_text(title)
     description = clean_text(description) if isinstance(description, str) else ""
@@ -112,14 +130,22 @@ async def _card(url: str, title: str, description: Any, read_page: PageReader) -
             page = await asyncio.wait_for(read_page(url), ENRICH_TIMEOUT_S)
         except Exception as e:
             log.info("补全卡片时读取网页失败（%s）：%s", url, e)
+            notes.append(f"卡片 {url}：读取网页失败（{type(e).__name__}: {e}）")
         else:
+            filled = [name for name, empty in (("标题", not title), ("摘要", not description)) if empty]
             title = title or clean_text(page.title)
             description = description or clean_text(page.description)
             candidates = [page.cover, *(i.url for i in page.images)]
             cover = next((c for c in candidates if c and c.startswith("https://") and len(c) <= CARD_URL_MAX), None)
+            filled += ["封面"] if cover else []
+            if filled:
+                notes.append(f"卡片 {url}：从网页补上了{'、'.join(filled)}")
+    else:
+        notes.append(f"卡片 {url}：网址不是 https 或太长")
     title = _truncate(title, CARD_TITLE_MAX)
     if not title or cover is None:
         log.info("卡片缺标题或封面，改发文字：%s", url)
+        notes.append(f"卡片 {url}：缺{'标题' if not title else '封面'}，改发文字")
         return ("text", title)
     card = {
         "title": title,
@@ -147,10 +173,13 @@ def _history_text(segments: Sequence[Segment]) -> str:
     return "\n".join(lines)
 
 
-def _pack(segments: Sequence[Segment], max_chunks: int, *, fallback: str) -> list[OutboxChunk]:
+def _pack(segments: Sequence[Segment], max_chunks: int, *, fallback: str, notes: list[str]) -> list[OutboxChunk]:
     ordered: list[OutboxChunk] = []
     texts: list[str] = []
     media: list[OutboxChunk] = []
+    urls = sum(len(_LINK.findall(seg[1])) + len(find_urls(_LINK.sub("", seg[1]))) for seg in segments if seg[0] == "text")
+    if urls:
+        notes.append(f"文字里去掉了 {urls} 个网址（QQ 拒收带网址的文字消息）")
     for seg in segments:
         if seg[0] == "text":
             if text := clean_text(seg[1]):
@@ -163,10 +192,15 @@ def _pack(segments: Sequence[Segment], max_chunks: int, *, fallback: str) -> lis
         media.append(chunk)
         ordered.append(chunk)
     if not ordered:
+        notes.append("没有能发的内容，回复兜底文字")
         return [OutboxChunk(fallback)]
     if len(ordered) <= max_chunks:
         return ordered
     body = "\n".join(texts)
     n_media = min(len(media), max_chunks - (1 if body else 0))
+    notes.append(
+        f"共 {len(ordered)} 段，超过回复次数上限 {max_chunks}：文字合并放前面"
+        + (f"，丢掉 {len(media) - n_media} 张图片或卡片" if n_media < len(media) else "")
+    )
     chunks = [OutboxChunk(c) for c in split_reply(body, max_chunks - n_media)] if body else []
     return chunks + media[:n_media]

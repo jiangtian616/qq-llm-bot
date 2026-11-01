@@ -11,6 +11,9 @@ class LogsController extends GetxController {
 
   final LogsRepository repository;
 
+  final turns = <TurnItem>[].obs;
+  final turnStatus = RxnString();
+  final turnCounts = <String, int>{}.obs;
   final systemEvents = <SystemEventItem>[].obs;
   final level = RxnString();
   final logLines = <String>[].obs;
@@ -29,8 +32,9 @@ class LogsController extends GetxController {
       if (status == CoreStatus.running) load();
     });
     ever(level, (_) => loadEvents());
-    // 运行事件由核心服务写库时没有单独推送，跟着连接状态等事件一起刷新。
-    debounce(repository.events, (_) => loadEvents(), time: const Duration(milliseconds: 500));
+    ever(turnStatus, (_) => loadTurns());
+    // 运行事件由核心服务写库时没有单独推送，跟着连接状态等事件一起刷新；问答跟着 turn.done / turn.failed 等事件刷新。
+    debounce(repository.events, (_) => Future.wait([loadEvents(), loadTurns()]), time: const Duration(milliseconds: 500));
     _timer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (autoRefresh.value && coreRunning) loadLog();
     });
@@ -44,7 +48,19 @@ class LogsController extends GetxController {
   }
 
   Future<void> load() async {
-    await Future.wait([loadEvents(), loadLog()]);
+    await Future.wait([loadTurns(), loadEvents(), loadLog()]);
+  }
+
+  Future<void> loadTurns() async {
+    if (!coreRunning) return;
+    try {
+      final (items, counts) = await (repository.turns(turnStatus.value), repository.turnCounts()).wait;
+      turns.assignAll(items);
+      turnCounts.assignAll(counts);
+      error.value = null;
+    } on Object catch (e) {
+      error.value = e.toString();
+    }
   }
 
   Future<void> loadEvents() async {

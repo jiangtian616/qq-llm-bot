@@ -5,6 +5,7 @@ import '../../core/api/models.dart';
 import '../../core/ui/format.dart';
 import '../../core/ui/placeholder_view.dart';
 import '../../core/ui/scoped_settings_dialog.dart';
+import '../../core/ui/turn_trace_dialog.dart';
 import 'sessions_controller.dart';
 
 const _recvSettingLabels = {
@@ -382,7 +383,24 @@ class _Bubble extends StatelessWidget {
               children: [
                 SelectableText(m.content.isEmpty ? '（空消息）' : m.content),
                 const SizedBox(height: 4),
-                Text(meta.join(' · '), style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
+                Text.rich(
+                  TextSpan(children: [
+                    TextSpan(text: meta.join(' · ')),
+                    if (m.turn != null) ...[
+                      const TextSpan(text: ' · '),
+                      WidgetSpan(
+                        alignment: PlaceholderAlignment.middle,
+                        child: InkWell(
+                          onTap: () => showTurnTraceDialog(context, m.turn!.id),
+                          child: Text('处理过程',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.primary, decoration: TextDecoration.underline)),
+                        ),
+                      ),
+                    ],
+                  ]),
+                  style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline),
+                ),
               ],
             ),
           ),

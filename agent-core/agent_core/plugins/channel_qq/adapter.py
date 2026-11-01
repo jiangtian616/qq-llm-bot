@@ -77,6 +77,7 @@ class QQAdapter(ChannelAdapter):
         elif message.reply_to_event_id:
             payload["event_id"] = message.reply_to_event_id
         payload.update(message.extra)
+        note = None
         try:
             body = await self._post_message(message, payload)
         except QQApiError as e:
@@ -87,11 +88,13 @@ class QQAdapter(ChannelAdapter):
             payload.pop("card")
             payload["msg_type"] = TEXT_MSG_TYPE
             payload["content"] = card_text(message.card)
+            note = f"图文卡片被拒（{e}），改发文字"
             body = await self._post_message(message, payload)
         return SendResult(
             platform_message_id=body.get("id"),
             platform_ts=body.get("timestamp"),
             ref_idx=(body.get("ext_info") or {}).get("ref_idx"),
+            note=note,
         )
 
     def classify_send_error(self, error: Exception) -> SendErrorClass:

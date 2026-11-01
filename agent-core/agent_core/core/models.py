@@ -90,6 +90,8 @@ class SendResult:
     platform_message_id: str | None
     platform_ts: str | None = None
     ref_idx: str | None = None
+    note: str | None = None
+    """发送时的说明（比如卡片被拒、改发了文字），记进发送记录。"""
 
 
 @dataclass(frozen=True, slots=True)
