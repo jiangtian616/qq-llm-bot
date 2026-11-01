@@ -40,7 +40,7 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 
 - 桌面端不直接读写数据库，所有操作都走核心服务在 `127.0.0.1` 上的控制接口（`agent_core/control/`），实时事件走 `WS /events`。客户端是手写的 `lib/core/api/core_api_client.dart`，接口改了要同步改它和 `models.dart`。
 - 桌面端负责拉起和停止核心服务（`lib/platform/core_process_manager.dart`）。核心服务是普通子进程（不用分离模式，否则 Windows 上 uv / venv 启动器拉起 python 时会弹控制台窗口），启动时带 `--parent-pid`，桌面端退出（包括被强制结束、停止调试）后它会自己平稳停止；带这个参数时日志只写文件。查找顺序：`QQ_LLM_BOT_CORE` → 打包时放在程序旁边的 `agent-core/`（macOS 在 `.app/Contents/Helpers/agent-core`）→ 源码目录里 `uv run agent-core`。
-- 数据目录的规则在两边各实现了一份，改动时要保持一致：`lib/platform/app_paths.dart` 和 `agent_core/infra/paths.py`。顺序是：环境变量或 `--data-dir` → 程序旁边的 `qq-llm-bot-data` 文件夹（便携模式）→ 系统的用户数据目录。
+- 数据目录的规则在两边各实现了一份，改动时要保持一致：`lib/platform/app_paths.dart` 和 `agent_core/infra/paths.py`。顺序是：环境变量或 `--data-dir` → 程序旁边的 `qq-llm-bot-data` 文件夹（便携模式，安装包不再自带）→ 设置页选的自定义目录（指针文件是系统用户数据目录里的 `data-location.json`，目录不存在时报错、不退回默认目录）→ 系统的用户数据目录。更换数据目录在桌面端完成（`lib/platform/data_dir_mover.dart`）：停下核心服务、复制数据、写指针，再重新启动桌面端。
 
 ### 核心服务的分层
 

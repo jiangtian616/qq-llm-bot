@@ -1,9 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
 /// 数据目录用的是哪一条规则。
-enum DataDirSource { environment, portable, standard }
+enum DataDirSource { environment, portable, custom, standard }
 
 class DataDirException implements Exception {
   DataDirException(this.message);
@@ -16,9 +17,11 @@ class DataDirException implements Exception {
 ///
 /// 1. 环境变量 `QQ_LLM_BOT_DATA_DIR`；
 /// 2. 便携模式：程序旁边有 `qq-llm-bot-data` 文件夹，数据就放在里面；
-/// 3. （待实现）设置页选的自定义目录，路径记在系统配置目录的指针文件里；
+/// 3. 设置页选的自定义目录，路径记在系统默认目录的指针文件 `data-location.json` 里；
 /// 4. 系统默认目录：Windows `%APPDATA%\qq-llm-bot`，macOS `~/Library/Application Support/qq-llm-bot`，
 ///    Linux `$XDG_DATA_HOME/qq-llm-bot`（默认 `~/.local/share/qq-llm-bot`）。
+///
+/// 安装包不再自带便携文件夹：升级时常常是删掉整个旧程序文件夹再解压新包，数据放在程序旁边会跟着一起删掉。
 class AppPaths {
   AppPaths._(this.dataDir, this.source);
 
@@ -28,10 +31,16 @@ class AppPaths {
   /// 便携模式的标记兼数据目录。不叫 data：Flutter 的 Windows / Linux 产物里已经有一个 data 目录。
   static const portableDirName = 'qq-llm-bot-data';
 
+  /// 自定义数据目录的指针文件，放在系统默认目录里，格式 `{"path": "..."}`。
+  static const pointerFileName = 'data-location.json';
+
   final String dataDir;
   final DataDirSource source;
 
   bool get isPortable => source == DataDirSource.portable;
+
+  static String get standardDataDir => _standardDataDir();
+  static String get pointerFile => p.join(_standardDataDir(), pointerFileName);
 
   String get controlFile => p.join(dataDir, 'control.json');
   String get desktopLockFile => p.join(dataDir, 'desktop.lock');
@@ -50,7 +59,39 @@ class AppPaths {
       _ensureWritable(portable);
       return AppPaths._(portable, DataDirSource.portable);
     }
+    final custom = _customDataDir();
+    if (custom != null) return AppPaths._(custom, DataDirSource.custom);
     return _create(_standardDataDir(), DataDirSource.standard);
+  }
+
+  /// 读指针文件；没有或内容不对时返回 null。指向的目录不存在时直接报错，不悄悄换回默认目录：那样看起来就像数据全丢了。
+  static String? _customDataDir() {
+    final file = File(pointerFile);
+    if (!file.existsSync()) return null;
+    final String? path;
+    try {
+      final json = jsonDecode(file.readAsStringSync());
+      path = json is Map ? json['path'] as String? : null;
+    } on Object {
+      return null;
+    }
+    if (path == null || path.isEmpty) return null;
+    if (!Directory(path).existsSync()) {
+      throw DataDirException('设置的数据目录不存在：$path。如果它在移动硬盘或网络盘上，请先接好再启动；'
+          '不再使用这个目录的话，删除 ${file.path} 即可改回默认目录。');
+    }
+    return p.normalize(p.absolute(path));
+  }
+
+  /// 把自定义数据目录写进指针文件；传 null 改回默认目录。下次启动生效。
+  static void setCustomDataDir(String? dir) {
+    final file = File(pointerFile);
+    if (dir == null) {
+      if (file.existsSync()) file.deleteSync();
+      return;
+    }
+    file.parent.createSync(recursive: true);
+    file.writeAsStringSync(jsonEncode({'path': dir}));
   }
 
   /// 「程序旁边」：Windows / Linux 免安装包是可执行文件所在目录，macOS 是 .app 所在目录，

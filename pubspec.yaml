@@ -41,6 +41,7 @@ dependencies:
   tray_manager: ^0.5.3
   launch_at_startup: ^0.5.1
   path: ^1.9.1
+  file_selector: ^1.1.0
 
 dev_dependencies:
   flutter_test:

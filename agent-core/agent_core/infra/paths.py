@@ -3,13 +3,16 @@
 和桌面端的 platform/app_paths.dart 按同一套规则解析，从上往下用第一个命中的：
 1. 命令行参数 --data-dir（桌面端拉起核心服务时总是带上），或环境变量 QQ_LLM_BOT_DATA_DIR；
 2. 便携模式：程序旁边有 qq-llm-bot-data 文件夹，数据就放在里面（只对打包后的程序生效）；
-3. （待实现）设置页选的自定义目录，路径记在系统配置目录的指针文件里；
+3. 桌面端设置页选的自定义目录，路径记在系统默认目录的 data-location.json 里；
 4. 系统默认目录。
+
+便携模式不再随安装包默认开启：升级时常常是删掉整个旧程序文件夹再解压新包，数据放在程序旁边会跟着一起删掉。
 """
 
 from __future__ import annotations
 
 import enum
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -21,12 +24,15 @@ APP_NAME = "qq-llm-bot"
 ENV_DATA_DIR = "QQ_LLM_BOT_DATA_DIR"
 # 不叫 data：Flutter 的 Windows / Linux 产物里已经有一个 data 目录。
 PORTABLE_DIR_NAME = "qq-llm-bot-data"
+# 自定义数据目录的指针文件，放在系统默认目录里；格式 {"path": "..."}，由桌面端写入。
+POINTER_FILE_NAME = "data-location.json"
 
 
 class DataDirSource(enum.StrEnum):
     ARGUMENT = "argument"
     ENVIRONMENT = "environment"
     PORTABLE = "portable"
+    CUSTOM = "custom"
     STANDARD = "standard"
 
 
@@ -37,6 +43,27 @@ class DataDirError(RuntimeError):
 def default_data_dir() -> Path:
     # Windows: %APPDATA%\qq-llm-bot；macOS: ~/Library/Application Support/qq-llm-bot；Linux: ~/.local/share/qq-llm-bot
     return Path(platformdirs.user_data_dir(APP_NAME, appauthor=False, roaming=True))
+
+
+def custom_data_dir(standard: Path) -> Path | None:
+    """读系统默认目录里的指针文件；没有或内容不对时返回 None。
+
+    指针指向的目录不存在时直接报错，不悄悄换回默认目录：那样看起来就像数据全丢了。
+    """
+    pointer = standard / POINTER_FILE_NAME
+    try:
+        value = json.loads(pointer.read_text(encoding="utf-8")).get("path")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        raise DataDirError(
+            f"设置的数据目录不存在：{path}。如果它在移动硬盘或网络盘上，请先接好再启动；"
+            f"不再使用这个目录的话，删除 {pointer} 即可改回默认目录。"
+        )
+    return path.resolve()
 
 
 def is_packaged() -> bool:
@@ -85,7 +112,11 @@ def resolve_data_dir(argument: str | Path | None, anchor: Path | None = None) ->
         # 便携文件夹在但写不进去时直接报错，不悄悄换到系统目录。
         _ensure_writable(portable)
         return portable, DataDirSource.PORTABLE
-    return default_data_dir(), DataDirSource.STANDARD
+    standard = default_data_dir()
+    custom = custom_data_dir(standard)
+    if custom is not None:
+        return custom, DataDirSource.CUSTOM
+    return standard, DataDirSource.STANDARD
 
 
 @dataclass(frozen=True, slots=True)

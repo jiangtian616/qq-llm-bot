@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:get/get.dart';
 
 import '../platform/core_process_manager.dart';
@@ -29,4 +31,13 @@ Future<void> quitApp(SingleInstance instance) async {
   }
   await instance.release();
   await window.quit();
+}
+
+/// 重新启动桌面端：先拉起新实例再退出当前的。换了数据目录后用，新实例的锁文件在新目录里，不会和当前实例冲突。
+Future<void> restartApp(SingleInstance instance) async {
+  // AppImage 运行时可执行文件在临时挂载的目录里，当前实例退出后就没了，要从 AppImage 文件本身启动。
+  final appImage = Platform.environment['APPIMAGE'];
+  final executable = Platform.isLinux && appImage != null && appImage.isNotEmpty ? appImage : Platform.resolvedExecutable;
+  await Process.start(executable, const [], mode: ProcessStartMode.detached);
+  await quitApp(instance);
 }

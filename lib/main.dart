@@ -35,6 +35,8 @@ Future<void> main(List<String> args) async {
     // 已有实例在运行，已经通知它把窗口唤到前台。
     exit(0);
   }
+  Get.put(paths, permanent: true);
+  Get.put(instance, permanent: true);
 
   final prefs = Get.put(DesktopPrefs(paths.desktopPrefsFile).load(), permanent: true);
   final store = Get.put(ConnectionStore(controlFile: paths.controlFile), permanent: true);

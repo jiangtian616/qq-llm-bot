@@ -1,8 +1,13 @@
+import 'dart:io';
+
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
 import '../../core/api/models.dart';
 import '../../core/connection/connection_store.dart';
+import '../../platform/app_paths.dart';
+import '../../platform/data_dir_mover.dart';
 import '../../platform/desktop_prefs.dart';
 import 'settings_repository.dart';
 
@@ -16,6 +21,50 @@ class SettingsController extends GetxController {
   RxBool get autostartEnabled => repository.autostartEnabled;
   Rx<CloseAction> get closeAction => repository.closeAction;
   bool get trayAvailable => repository.trayAvailable;
+
+  // ---- 数据目录 ----
+
+  AppPaths get paths => repository.paths;
+  final dataDirBusy = false.obs;
+
+  /// 数据目录卡片上的提示：(内容, 是否错误)。
+  final dataDirNotice = Rxn<(String, bool)>();
+
+  /// 选一个文件夹；取消或不能用时返回 null。
+  Future<String?> pickDataDir() async {
+    dataDirNotice.value = null;
+    final dir = await getDirectoryPath(confirmButtonText: '选择');
+    if (dir == null) return null;
+    return checkDataDir(dir) ? dir : null;
+  }
+
+  bool checkDataDir(String dir) {
+    final problem = DataDirMover.validate(paths.dataDir, dir);
+    if (problem != null) dataDirNotice.value = ('不能用 $dir：$problem', true);
+    return problem == null;
+  }
+
+  Future<void> changeDataDir(String target, DataDirAction action) async {
+    dataDirBusy.value = true;
+    dataDirNotice.value = null;
+    try {
+      await repository.changeDataDir(target, action);
+    } on Object catch (e) {
+      dataDirNotice.value = ('更换数据目录失败，仍在使用原来的目录：$e', true);
+    } finally {
+      dataDirBusy.value = false;
+    }
+  }
+
+  Future<void> openDataDir() async {
+    final command = Platform.isWindows ? 'explorer' : (Platform.isMacOS ? 'open' : 'xdg-open');
+    try {
+      // explorer 打开成功也返回退出码 1，不看退出码。
+      await Process.run(command, [paths.dataDir]);
+    } on Object catch (e) {
+      dataDirNotice.value = ('打不开文件夹：$e', true);
+    }
+  }
 
   // ---- 网络代理（核心服务的 network.* 配置项，只有全局级） ----
 

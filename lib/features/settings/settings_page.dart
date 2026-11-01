@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../platform/app_paths.dart';
+import '../../platform/data_dir_mover.dart';
 import '../../platform/desktop_prefs.dart';
 import 'settings_controller.dart';
 
@@ -55,6 +57,8 @@ class SettingsPage extends GetView<SettingsController> {
               )),
         const SizedBox(height: 16),
         _ProxyCard(controller: controller),
+        const SizedBox(height: 16),
+        _DataDirCard(controller: controller),
         const SizedBox(height: 16),
         Card(
           child: ListTile(
@@ -199,6 +203,139 @@ class _ProxyCard extends StatelessWidget {
           );
         }),
       ),
+    );
+  }
+}
+
+/// 数据目录：数据库、日志、备份放在哪。换目录要重新启动程序。
+class _DataDirCard extends StatelessWidget {
+  const _DataDirCard({required this.controller});
+
+  final SettingsController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final paths = controller.paths;
+    final changeable = paths.source == DataDirSource.custom || paths.source == DataDirSource.standard;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Obx(() {
+          final busy = controller.dataDirBusy.value;
+          final notice = controller.dataDirNotice.value;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('数据目录', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text('数据库、日志和备份都放在这里。', style: theme.textTheme.bodySmall),
+              const SizedBox(height: 12),
+              SelectableText(paths.dataDir),
+              const SizedBox(height: 4),
+              Text(
+                switch (paths.source) {
+                  DataDirSource.environment => '由环境变量 ${AppPaths.envVar} 指定，不能在这里修改。',
+                  DataDirSource.portable => '便携模式：程序旁边有 ${AppPaths.portableDirName} 文件夹。升级时如果删掉整个程序文件夹，数据会一起删掉。'
+                      '要换位置，先退出程序，把这个文件夹移到程序目录以外，再到这里选它。',
+                  DataDirSource.custom => '自定义目录。升级时删掉程序文件夹不影响这里的数据。',
+                  DataDirSource.standard => '系统默认目录。升级时删掉程序文件夹不影响这里的数据。',
+                },
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  OutlinedButton(onPressed: controller.openDataDir, child: const Text('打开文件夹')),
+                  if (changeable) ...[
+                    const SizedBox(width: 12),
+                    OutlinedButton(
+                      onPressed: busy ? null : () => _change(context),
+                      child: Text(busy ? '正在更换…' : '更换…'),
+                    ),
+                  ],
+                  if (paths.source == DataDirSource.custom) ...[
+                    const SizedBox(width: 12),
+                    TextButton(
+                      onPressed: busy ? null : () => _change(context, target: AppPaths.standardDataDir),
+                      child: const Text('改回默认目录'),
+                    ),
+                  ],
+                ],
+              ),
+              if (notice != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(notice.$1, style: TextStyle(color: notice.$2 ? theme.colorScheme.error : null)),
+                ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  Future<void> _change(BuildContext context, {String? target}) async {
+    final dir = target == null ? await controller.pickDataDir() : (controller.checkDataDir(target) ? target : null);
+    if (dir == null || !context.mounted) return;
+    final action = await showDialog<DataDirAction>(context: context, builder: (_) => _DataDirDialog(target: dir));
+    if (action != null) await controller.changeDataDir(dir, action);
+  }
+}
+
+/// 确认怎么处理新目录：没有数据就复制过去；已有数据时用它，或者用当前数据替换。
+class _DataDirDialog extends StatelessWidget {
+  const _DataDirDialog({required this.target});
+
+  final String target;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final hasData = DataDirMover.hasData(target);
+    return AlertDialog(
+      title: const Text('更换数据目录'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(target),
+            const SizedBox(height: 12),
+            Text(hasData
+                ? '这个文件夹里已经有数据（可能是以前用过的）。可以直接用它，也可以用当前的数据替换，'
+                    '替换时那里原有的数据库挪到它的 backups 文件夹里留底。'
+                : '会先停止核心服务，把当前的数据复制过去。'),
+            const SizedBox(height: 8),
+            const Text('完成后程序会重新启动。原目录的数据保留不动，确认没问题后可以手动删除。'),
+            if (DataDirMover.insideProgramDir(target)) ...[
+              const SizedBox(height: 8),
+              Text(
+                '这个文件夹在程序目录里，升级时如果删掉整个程序文件夹，数据会一起删掉。建议选程序目录以外的位置。',
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        if (hasData) ...[
+          TextButton(
+            onPressed: () => Navigator.pop(context, DataDirAction.replace),
+            child: const Text('用当前数据替换'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, DataDirAction.useExisting),
+            child: const Text('使用这里的数据'),
+          ),
+        ] else
+          FilledButton(
+            onPressed: () => Navigator.pop(context, DataDirAction.copy),
+            child: const Text('复制并重启'),
+          ),
+      ],
     );
   }
 }
