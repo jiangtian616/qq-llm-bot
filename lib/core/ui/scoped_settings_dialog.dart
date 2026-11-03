@@ -5,11 +5,18 @@ import '../api/core_api_client.dart';
 import '../api/models.dart';
 import '../connection/connection_store.dart';
 
-/// 某个配置项在界面上怎么编辑。
-enum _Kind { toggle, integer, decimal, text, profile }
+/// group.reply_mode 的选项：值 → 界面上的说法。配置页也用它。
+const groupReplyModes = {
+  'mention': '只回复 @ 它的',
+  'all': '每条都回复',
+  'auto': '由模型判断',
+};
+
+/// 某个配置项在界面上怎么编辑。longText 是多行文字，编辑框放在这一行下面。
+enum _Kind { toggle, integer, decimal, text, longText, profile, choice }
 
 class _Spec {
-  const _Spec(this.label, this.kind, {this.helper, this.min = 0, this.nullLabel});
+  const _Spec(this.label, this.kind, {this.helper, this.min = 0, this.nullLabel, this.choices = const {}});
 
   final String label;
   final _Kind kind;
@@ -18,9 +25,16 @@ class _Spec {
 
   /// 值为空时显示什么（比如「不限」）。
   final String? nullLabel;
+
+  /// choice 的选项：值 → 说法。
+  final Map<String, String> choices;
 }
 
 const _specs = <String, _Spec>{
+  'group.reply_mode': _Spec('群聊消息回复哪些', _Kind.choice,
+      helper: 'QQ 群设置成「接收全部消息」时才有区别；引用机器人的消息也算 @ 它', choices: groupReplyModes),
+  'group.judge.profile_id': _Spec('判断要不要回复用的模型配置', _Kind.profile, nullLabel: '和回复用同一个'),
+  'group.judge.prompt': _Spec('判断要不要回复的标准', _Kind.longText, helper: '「由模型判断」时用；最近的聊天和输出格式由程序补上'),
   'group.context_max_messages': _Spec('回复时最多带上多少条期间的群消息', _Kind.integer,
       helper: '只带最新的，更早的只告诉模型省略了几条；0 表示不限'),
   'group.context_max_chars': _Spec('期间的群消息最多带多少字', _Kind.integer, helper: '0 表示不限'),
@@ -48,6 +62,9 @@ const _notInherited = {'budget.daily_usd'};
 
 /// 账号可以单独设置的配置项。
 const accountSettingKeys = [
+  'group.reply_mode',
+  'group.judge.profile_id',
+  'group.judge.prompt',
   'group.context_max_messages',
   'group.context_max_chars',
   'c2c.enabled',
@@ -70,6 +87,9 @@ const accountSettingKeys = [
 /// 会话可以单独设置的配置项；群和单聊各自只显示用得上的。
 List<String> conversationSettingKeys({required bool isGroup}) => [
       if (isGroup) ...[
+        'group.reply_mode',
+        'group.judge.profile_id',
+        'group.judge.prompt',
         'group.context_max_messages',
         'group.context_max_chars',
       ] else
@@ -144,9 +164,11 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
     return api;
   }
 
-  /// 模型配置只有一个时，单独选模型没有意义，不显示这一项。
-  List<String> get _keys =>
-      [for (final k in widget.keys) if (k != 'provider_profile_id' || _profiles.length > 1) k];
+  /// 模型配置只有一个时，单独选模型没有意义，不显示这两项。
+  List<String> get _keys => [
+        for (final k in widget.keys)
+          if (_specs[k]!.kind != _Kind.profile || _profiles.length > 1) k,
+      ];
 
   @override
   void initState() {
@@ -199,6 +221,8 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
     return switch (spec.kind) {
       _Kind.toggle => value == true ? '开' : '关',
       _Kind.profile => _profiles.firstWhereOrNull((p) => p.id == value)?.name ?? '#$value',
+      _Kind.choice => spec.choices['$value'] ?? '$value',
+      _Kind.longText => _ellipsis('$value'.replaceAll('\n', ' '), 40),
       _ => '$value',
     };
   }
@@ -216,7 +240,7 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
         final v = double.tryParse(text);
         if (v == null || v <= 0) return (null, '「${spec.label}」要填大于 0 的数字');
         return (v, null);
-      case _Kind.text:
+      case _Kind.text || _Kind.longText:
         if (text.isEmpty) return (null, '「${spec.label}」不能为空');
         return (text, null);
       default:
@@ -264,6 +288,12 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
           items: [for (final p in _profiles) DropdownMenuItem(value: p.id, child: Text('${p.name}（${p.model}）'))],
           onChanged: set,
         ),
+      _Kind.choice => DropdownButton<String>(
+          value: spec.choices.containsKey(_values[key]) ? _values[key] as String : spec.choices.keys.first,
+          items: [for (final e in spec.choices.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
+          onChanged: set,
+        ),
+      _Kind.longText => const SizedBox.shrink(),
       _ => SizedBox(
           width: 140,
           child: TextField(
@@ -280,7 +310,7 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
     final spec = _specs[key]!;
     final overridden = _overridden.contains(key);
     final (inheritedValue, source) = _inherited[key]!;
-    return Padding(
+    final row = Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
@@ -293,6 +323,7 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
                 _values[key] ??= inheritedValue;
                 // 继承下来的是「空」（比如「第一个模型配置」）时，下拉框显示第一项，保存的也要是这一项。
                 if (spec.kind == _Kind.profile) _values[key] ??= _profiles.first.id;
+                if (spec.kind == _Kind.choice) _values[key] ??= spec.choices.keys.first;
                 if (_texts[key]!.text.isEmpty && inheritedValue != null) _texts[key]!.text = '$inheritedValue';
               } else {
                 _overridden.remove(key);
@@ -318,6 +349,17 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
           if (overridden) _editor(key),
         ],
       ),
+    );
+    if (spec.kind != _Kind.longText || !overridden) return row;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        row,
+        Padding(
+          padding: const EdgeInsets.only(left: 48, bottom: 8),
+          child: TextField(controller: _texts[key], minLines: 3, maxLines: 8),
+        ),
+      ],
     );
   }
 
@@ -359,3 +401,5 @@ class _ScopedSettingsDialogState extends State<_ScopedSettingsDialog> {
     );
   }
 }
+
+String _ellipsis(String text, int n) => text.length <= n ? text : '${text.substring(0, n - 1)}…';

@@ -4,8 +4,26 @@ from __future__ import annotations
 
 from typing import Any
 
+# 模型判断要不要回复（group.reply_mode = auto）时的默认标准；用户可以按会话 / 账号 / 全局改写。
+DEFAULT_JUDGE_PROMPT = (
+    "你在帮一个 QQ 群里的机器人判断：群里刚发的这条消息，机器人要不要回复。\n"
+    "应该回复：叫了机器人的名字或明显在跟它说话；向它提问、请它帮忙；接着它刚才的回复往下聊；"
+    "大家在讨论一个它能给出有用信息的问题，而且没人在等别人回答。\n"
+    "不用回复：群友之间的闲聊、寒暄、接话；只有表情、图片、「哈哈」「+1」这类没有实际内容的消息；"
+    "明显是对别人说的话；机器人插话会显得多余或打扰的时候。\n"
+    "拿不准时不回复。"
+)
+
 DEFAULTS: dict[str, Any] = {
-    # 上一轮之后没触发回复（被限频或预算挡下）的群消息拼进本轮时，最多带最新的多少条、多少字；更早的只留一行「省略了 N 条」。0 表示不限
+    # 群里回复哪些消息。平台推哪些消息由 QQ 客户端的群设置决定（仅 @机器人 / 全部消息），这里决定推过来的消息里回复哪些：
+    # mention 只回复 @ 机器人或引用它的消息；all 每条都回复；auto 由模型判断（@ 和引用机器人的消息照样回复，
+    # 其余每条先用 group.judge.* 单独问一次模型）。没回复的消息照样存下来，下次回复时作为期间的群聊带给模型
+    "group.reply_mode": "mention",
+    # 判断要不要回复的标准（auto 模式），写在判断请求的 system 里；输出格式由程序补上，这里只写标准
+    "group.judge.prompt": DEFAULT_JUDGE_PROMPT,
+    # 判断用哪个模型配置；为空时和回复用同一个。判断每条消息都要请求一次，用便宜的模型就行
+    "group.judge.profile_id": None,
+    # 上一轮之后没回复的群消息拼进本轮时，最多带最新的多少条、多少字；更早的只留一行「省略了 N 条」。0 表示不限
     "group.context_max_messages": 20,
     "group.context_max_chars": 2000,
     "c2c.enabled": True,
@@ -45,6 +63,9 @@ DEFAULTS: dict[str, Any] = {
 }
 
 SCOPES = ("global", "account", "conversation")
+
+# group.reply_mode 的取值，含义见 DEFAULTS 里的注释。
+GROUP_REPLY_MODES = ("mention", "all", "auto")
 
 # 只能在全局设置的配置项。
 GLOBAL_ONLY_PREFIXES = ("network.",)

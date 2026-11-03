@@ -133,6 +133,7 @@ class OutboxWorker:
             platform_message_id=result.platform_message_id,
             platform_ts=result.platform_ts,
             ref_idx=result.ref_idx,
+            sender_key=result.sender_key,
             last_error=None,
         )
         await self._bus.publish(BusEvent("outbox.sent", {"outbox_id": row.id, "conversation_id": conv.id}))

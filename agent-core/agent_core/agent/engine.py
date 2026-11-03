@@ -2,6 +2,15 @@
 
 只认统一的消息类型，不关心消息来自哪个平台、由哪个模型生成。
 
+群里回复哪些消息（group.reply_mode）：平台推哪些消息由 QQ 客户端的群设置决定，推过来的消息里，
+mention 只回复 @ 机器人或引用了它的消息，all 每条都回复，auto 让模型判断（@ 和引用机器人的照样回复，其余每条先单独问一次）。
+判断用 group.judge.profile_id 指定的模型配置（为空时和回复同一个），标准是 group.judge.prompt，
+判断的费用和处理过程记在这条消息的问答上：要回复就接着排队回复，不回复就标为 skipped。
+没回复的消息照样存进中立历史，下次回复时作为期间的群聊拼进 user 消息，模型才知道中间聊了什么。
+
+引用的消息：平台推送时带着被引用消息的内容和附件；按发送者标识在本会话里认出是谁发的（机器人自己也认得出来），
+写成文字前面的「[引用……]」，引用的图片和本条的图片一起交给模型。
+
 上下文的两道上限：
 - 上一轮之后攒下的群消息只带最新的一部分（group.context_max_messages / group.context_max_chars）；
 - 每轮结束后估算下一次请求的大小，超过 history.compact_at_tokens 或轮数超过 history.max_turns 时，
@@ -27,6 +36,7 @@ from agent_core.agent.prompt import (
     CLEARED_TEXT,
     EMPTY_REPLY_TEXT,
     HELP_TEXT,
+    JUDGE_FORMAT,
     RATE_LIMITED_TEXT,
 )
 from agent_core.agent.media import MediaFetcher, note_history
@@ -49,6 +59,12 @@ log = logging.getLogger(__name__)
 # 一轮最多几次工具调用（服务端搜索暂停后接着请求也算），整轮最长多少秒；群里被动回复的有效期是 5 分钟，要给发送留出时间。
 MAX_TOOL_ROUNDS = 4
 TURN_TIMEOUT_S = 150
+# 判断要不要回复：给模型看最近多少条消息（每条最多多少字、一共最多多少字）、机器人设定的前多少字，最长等多少秒。
+JUDGE_CONTEXT_MESSAGES = 12
+JUDGE_LINE_CHARS = 300
+JUDGE_CONTEXT_CHARS = 3000
+JUDGE_PERSONA_CHARS = 800
+JUDGE_TIMEOUT_S = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,18 +132,24 @@ class AgentEngine:
         async def setting(key: str) -> Any:
             return await db.settings.resolve(key, account_id=msg.account_id, conversation_id=conv_id)
 
+        msg = await self._resolve_quote(msg, conv_id)
+        judging = False
         if msg.scene == Scene.GROUP:
-            # 平台推送哪些群消息由 QQ 客户端里的群设置决定（仅 @机器人 / 全部消息），推过来的都回复。
-            triggered = True
+            # 平台推哪些群消息由 QQ 客户端的群设置决定（仅 @机器人 / 全部消息）；推过来的里面回复哪些看 group.reply_mode。
+            mode = await setting("group.reply_mode")
+            addressed = msg.is_mention or (msg.quote is not None and msg.quote.by_bot)
+            triggered = mode == "all" or addressed
+            judging = mode == "auto" and not triggered
         else:
             triggered = bool(await setting("c2c.enabled"))
 
         command = None
         prefix = await setting("command.prefix")
-        if triggered and prefix and msg.content.startswith(prefix):
+        if (triggered or judging) and prefix and msg.content.startswith(prefix):
             name = msg.content[len(prefix) :].strip()
             if name in _COMMANDS:
                 command = name
+                triggered, judging = True, False
 
         # 预算用完或触发太频繁：这条消息只作为上下文保存，不调模型；回一句固定的提醒（限频每个窗口只提醒一次）。
         blocked, notice = False, None
@@ -135,6 +157,9 @@ class AgentEngine:
             blocked, notice = await self._check_limits(msg, setting)
             if blocked:
                 triggered = False
+        # 要判断的消息没人叫机器人：预算用完了就不判断，也不提醒。限频等判断要回复以后再算。
+        if judging and await self._budget_exceeded(msg.account_id) is not None:
+            judging = False
 
         profile = None
         if triggered and command is None:
@@ -143,13 +168,21 @@ class AgentEngine:
                 await db.events.add("error", "provider", "没有模型配置，无法回复", account_id=msg.account_id)
                 await db.inbox.finish(inbox.id, "failed", error="没有模型配置")
                 return
+        judge_profile = None
+        if judging:
+            judge_profile = await self._profile(
+                await setting("group.judge.profile_id") or await setting("provider_profile_id")
+            )
+            judging = judge_profile is not None
 
+        turn_profile = profile or judge_profile
         ingested = await db.conversations.ingest(
             msg,
             triggered=triggered,
-            provider=profile.provider if profile else None,
-            model=profile.model if profile else None,
-            profile_id=profile.id if profile else None,
+            provider=turn_profile.provider if turn_profile else None,
+            model=turn_profile.model if turn_profile else None,
+            profile_id=turn_profile.id if turn_profile else None,
+            judging=judging,
         )
         if not ingested.duplicate:
             await self._bus.publish(
@@ -166,6 +199,22 @@ class AgentEngine:
         if blocked and notice and not ingested.duplicate:
             await self._system_reply(notice, inbox, msg, ingested)
             return
+        if judging:
+            if ingested.turn_status == "judging":
+                profile = await self._judge(inbox, msg, ingested, judge_profile, setting)
+                if profile is None:
+                    return
+            elif ingested.turn_status == "skipped":
+                # 崩溃重启后重新处理到这里：已经判断过不回复。
+                await db.inbox.finish(inbox.id, "done", conversation_id=ingested.conversation_id)
+                return
+            else:
+                # 之前已经判断要回复，问答换成了回复用的模型配置。
+                profile = await self._profile(await setting("provider_profile_id"))
+                if profile is None:
+                    await db.inbox.finish(inbox.id, "failed", error="没有模型配置")
+                    return
+            triggered = True
         if not triggered:
             await db.inbox.finish(inbox.id, "done", conversation_id=ingested.conversation_id)
             return
@@ -192,6 +241,109 @@ class AgentEngine:
             web_proxy=await self._db.settings.proxy("providers"),
         )
         await self._answer(inbox, msg, channel, ingested, profile, max_chunks, vision, limits, options)
+
+    async def _resolve_quote(self, msg: InboundMessage, conv_id: int | None) -> InboundMessage:
+        """认出被引用的消息是谁发的：机器人自己，或者这个会话里发过言的人。"""
+        q = msg.quote
+        if q is None or not q.sender_key or conv_id is None:
+            return msg
+        found = await self._db.conversations.quote_sender(conv_id, q.sender_key)
+        if found is None:
+            return msg
+        by_bot, speaker = found
+        return replace(msg, quote=replace(q, by_bot=by_bot, speaker=speaker))
+
+    async def _judge(
+        self, inbox: Any, msg: InboundMessage, ingested: Ingested, judge_profile: Any, setting: Callable[[str], Any]
+    ) -> Any:
+        """问模型这条群消息要不要回复。要回复时返回回复用的模型配置（问答开始排队）；不回复时收尾并返回 None。
+
+        判断出错、模型不支持、要回复但触发太频繁，都按不回复处理（不提醒：没人叫机器人）。
+        """
+        db = self._db
+        turn_id = ingested.turn_id
+        assert turn_id is not None
+        await db.conversations.mark_turn(turn_id, started_at=now_ms(), inbox_id=inbox.id)
+        trace = Trace()
+        watch = Stopwatch()
+        reply, reason, error, result, text = False, "", None, None, ""
+        reply_profile = await self._profile(await setting("provider_profile_id"))
+        try:
+            provider = await self._providers.get(judge_profile, await db.settings.proxy("providers"))
+            recent = await db.conversations.recent(
+                conversation_id=ingested.conversation_id,
+                history_epoch=ingested.history_epoch,
+                before_id=ingested.message_id,
+                limit=JUDGE_CONTEXT_MESSAGES,
+            )
+            current = NeutralMessage(
+                "user", msg.content, speaker=ingested.sender_label or None, attachments=msg.attachments, quote=msg.quote
+            )
+            persona = (reply_profile.system_prompt if reply_profile else "") or ""
+            text = judge_text(recent, current, persona)
+            instructions = f"{(await setting('group.judge.prompt') or '').strip()}\n\n{JUDGE_FORMAT}".strip()
+            result = await asyncio.wait_for(provider.judge(instructions, text), JUDGE_TIMEOUT_S)
+            if result is None:
+                reason = f"模型配置「{judge_profile.name}」不支持判断要不要回复，按不回复处理"
+            else:
+                reply, reason = result.reply, result.reason
+        except Exception as e:
+            log.exception("判断要不要回复失败（turn %s）", turn_id)
+            error = f"{type(e).__name__}: {e}"
+            if isinstance(e, TimeoutError) and not str(e):
+                error = f"TimeoutError: 超过 {JUDGE_TIMEOUT_S} 秒，已放弃"
+            reason = "判断出错，按不回复处理"
+        if reply and reply_profile is None:
+            reply, reason = False, f"{reason}（但没有回复用的模型配置）"
+        if reply:
+            blocked, _ = await self._check_limits(msg, setting)
+            if blocked:
+                reply, reason = False, f"{reason}（但触发太频繁或预算已用完，不回复）"
+        detail = [f"模型配置「{judge_profile.name}」：{judge_profile.provider} / {judge_profile.model}", f"理由：{reason}"]
+        if result is not None and result.detail:
+            detail.append(result.detail)
+        trace.add(
+            "judge",
+            "判断：要回复" if reply else "判断：不回复",
+            detail="\n".join(detail),
+            data={"text": text} if text else None,
+            error=error,
+            started_at=watch.started_at,
+            duration_ms=watch.ms,
+        )
+        cost = result.cost_usd if result is not None else 0.0
+        if reply:
+            await db.conversations.start_judged_turn(
+                turn_id,
+                ingested.message_id,
+                provider=reply_profile.provider,
+                model=reply_profile.model,
+                provider_profile_id=reply_profile.id,
+                cost_usd=cost,
+            )
+            await self._save_trace(turn_id, trace)
+            return reply_profile
+        usage = result.usage if result is not None else None
+        await db.conversations.mark_turn(
+            turn_id,
+            status="skipped",
+            model=result.model if result is not None else judge_profile.model,
+            stop_reason="judged_skip",
+            last_error=error[:2000] if error else None,
+            input_tokens=usage.input_tokens if usage else 0,
+            output_tokens=usage.output_tokens if usage else 0,
+            cache_read_tokens=usage.cache_read_tokens if usage else 0,
+            cache_write_tokens=usage.cache_write_tokens if usage else 0,
+            cost_usd=cost,
+            latency_ms=watch.ms,
+            finished_at=now_ms(),
+        )
+        await self._save_trace(turn_id, trace)
+        await db.inbox.finish(inbox.id, "done", conversation_id=ingested.conversation_id)
+        await self._bus.publish(
+            BusEvent("turn.skipped", {"turn_id": turn_id, "conversation_id": ingested.conversation_id, "reason": reason})
+        )
+        return None
 
     async def _profile(self, profile_id: Any) -> Any:
         if profile_id:
@@ -312,7 +464,9 @@ class AgentEngine:
                 # 历史里的图片只留文字标记，不重新下载。
                 history = provider.build_context([note_history(m) for m in ctx.neutral_before])
                 prefix = list(history)
-            current = NeutralMessage("user", msg.content, speaker=ingested.sender_label or None, attachments=msg.attachments)
+            current = NeutralMessage(
+                "user", msg.content, speaker=ingested.sender_label or None, attachments=msg.attachments, quote=msg.quote
+            )
             pending = trim_pending(ctx.pending, limits.pending_max_messages, limits.pending_max_chars)
             lines = [*pending, current]
             media = await self._media.collect(
@@ -326,6 +480,7 @@ class AgentEngine:
             # 用户自己发的链接和图片可以直接用（读网页、发图）。
             seed = {u for line in lines for u in find_urls(line.content)}
             seed |= {a.url for line in lines for a in line.attachments if a.url}
+            seed |= {a.url for line in lines if line.quote for a in line.quote.attachments if a.url}
             tools = replace(tools, seed_links=frozenset(seed))
 
             kept = sum(1 for m in pending if any(m is p for p in ctx.pending))
@@ -415,6 +570,7 @@ class AgentEngine:
                 "output_tokens": result.usage.output_tokens,
                 "cache_read_tokens": result.usage.cache_read_tokens,
                 "cache_write_tokens": result.usage.cache_write_tokens,
+                # 加在已有的费用上（判断要不要回复的费用已经记在这一轮上）
                 "cost_usd": result.cost_usd,
                 "search_requests": result.search_requests,
                 "tool_rounds": result.tool_rounds,
@@ -538,6 +694,33 @@ class AgentEngine:
                 {"conversation_id": ingested.conversation_id, "epoch": epoch, "summarized": compacted is not None},
             )
         )
+
+
+def judge_text(recent: Sequence[NeutralMessage], current: NeutralMessage, persona: str) -> str:
+    """判断请求的 user 消息：机器人设定的开头、最近的聊天（太长时只留最新的）、要判断的那条。"""
+
+    def line(m: NeutralMessage) -> str:
+        m = note_history(m)
+        content = m.content if len(m.content) <= JUDGE_LINE_CHARS else m.content[:JUDGE_LINE_CHARS] + "…"
+        who = "你" if m.role == "assistant" else m.speaker
+        return f"[{who}] {content}" if who else content
+
+    lines: list[str] = []
+    chars = 0
+    for m in reversed(recent):
+        text = line(m)
+        if chars + len(text) > JUDGE_CONTEXT_CHARS:
+            break
+        lines.append(text)
+        chars += len(text)
+    lines.reverse()
+    parts = []
+    if persona.strip():
+        head = persona.strip()
+        parts.append(f"机器人的设定（节选）：\n{head[:JUDGE_PERSONA_CHARS]}" + ("…" if len(head) > JUDGE_PERSONA_CHARS else ""))
+    parts.append("群里最近的聊天：\n" + ("\n".join(lines) or "（没有）"))
+    parts.append(f"要判断的新消息：\n{line(current) or '（空消息）'}")
+    return "\n\n".join(parts)
 
 
 def trim_pending(pending: Sequence[NeutralMessage], max_messages: int, max_chars: int) -> list[NeutralMessage]:

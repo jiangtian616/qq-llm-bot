@@ -78,6 +78,10 @@ class ConfigPage extends GetView<ConfigController> {
                 ],
                 const SizedBox(height: 20),
                 const _BehaviorSection(),
+                if (controller.settings['group.reply_mode'] == 'auto') ...[
+                  const SizedBox(height: 20),
+                  _JudgeSection(key: ValueKey(_judgeKey(controller.settings))),
+                ],
                 const SizedBox(height: 20),
                 _ContextSection(key: ValueKey(_contextKey(controller.settings))),
                 const SizedBox(height: 20),
@@ -94,6 +98,8 @@ class ConfigPage extends GetView<ConfigController> {
   static String _limitsKey(Map<String, dynamic> s) => [for (final k in _LimitsSectionState.keys) s[k]].join('|');
 
   static String _contextKey(Map<String, dynamic> s) => [for (final k in _ContextSectionState.keys) s[k]].join('|');
+
+  static String _judgeKey(Map<String, dynamic> s) => '${s['group.judge.prompt'].hashCode}';
 
   static String _profileKey(ProfileInfo p) =>
       '${p.id}|${p.name}|${p.provider}|${p.model}|${p.apiKeyHint}|${p.params}|${p.systemPrompt.hashCode}';
@@ -863,10 +869,16 @@ class _BehaviorSection extends GetView<ConfigController> {
         return Column(
           children: [
             _SettingRow(
-              title: '群聊消息',
-              subtitle: '推给机器人的群消息都会回复。推哪些由 QQ 客户端里的群设置决定：'
-                  '「仅 @机器人」只回 @ 它的消息，「接收全部消息」每条都回',
-              trailing: const SizedBox.shrink(),
+              title: '群聊消息回复哪些',
+              subtitle: '推哪些消息给机器人由 QQ 客户端里的群设置决定（仅 @机器人 / 接收全部消息），'
+                  '这里决定推过来的消息回复哪些。引用机器人的消息也算 @ 它；没回复的消息会作为期间的群聊，交给下一次回复',
+              trailing: DropdownButton<String>(
+                value: groupReplyModes.containsKey(s['group.reply_mode']) ? s['group.reply_mode'] as String : 'mention',
+                items: [
+                  for (final e in groupReplyModes.entries) DropdownMenuItem(value: e.key, child: Text(e.value)),
+                ],
+                onChanged: (v) => _report(controller.setSetting('group.reply_mode', v)),
+              ),
             ),
             const Divider(height: 1),
             _SettingRow(
@@ -909,6 +921,87 @@ class _BehaviorSection extends GetView<ConfigController> {
           ],
         );
       }),
+    );
+  }
+}
+
+// ---------------- 由模型判断要不要回复 ----------------
+
+class _JudgeSection extends StatefulWidget {
+  const _JudgeSection({super.key});
+
+  @override
+  State<_JudgeSection> createState() => _JudgeSectionState();
+}
+
+class _JudgeSectionState extends State<_JudgeSection> {
+  final _c = Get.find<ConfigController>();
+  late final _prompt = TextEditingController(text: (_c.settings['group.judge.prompt'] as String?) ?? '');
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _prompt.dispose();
+    super.dispose();
+  }
+
+  void _show(String message, {bool error = false}) => _c.judgeNotice.value = (message, error);
+
+  Future<void> _save({bool reset = false}) async {
+    final text = _prompt.text.trim();
+    if (!reset && text.isEmpty) return _show('判断标准不能为空；想用默认的就点「恢复默认」', error: true);
+    setState(() => _saving = true);
+    // 恢复默认：删掉全局的值，沿用核心服务里的默认标准。
+    final error = await _c.setSetting('group.judge.prompt', reset ? null : text);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    _show(error ?? (reset ? '已恢复默认' : '已保存'), error: error != null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profileId = _c.settings['group.judge.profile_id'];
+    return _Section(
+      icon: Icons.rule_outlined,
+      title: '由模型判断要不要回复',
+      subtitle: '群里没 @ 机器人的消息，每条先单独问一次模型要不要回复（只带最近十几条聊天，不带工具），'
+          '费用算进每日预算；判断不回复的在日志页「问答」里筛「跳过」能看到理由',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SettingRow(
+            title: '判断用的模型配置',
+            subtitle: '每条消息都要判断一次，用便宜、快的模型就够了',
+            trailing: Obx(() => DropdownButton<int?>(
+                  value: _c.profiles.any((p) => p.id == profileId) ? profileId as int : null,
+                  items: [
+                    const DropdownMenuItem<int?>(value: null, child: Text('和回复用同一个')),
+                    for (final p in _c.profiles) DropdownMenuItem<int?>(value: p.id, child: Text('${p.name}（${p.model}）')),
+                  ],
+                  onChanged: (v) => _report(_c.setSetting('group.judge.profile_id', v)),
+                )),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _prompt,
+            minLines: 4,
+            maxLines: 12,
+            decoration: const InputDecoration(
+              labelText: '判断标准',
+              helperText: '写清楚什么时候该回、什么时候不该回；机器人的设定（系统提示词开头）、最近的聊天和输出格式由程序补上',
+              alignLabelWithHint: true,
+            ),
+          ),
+          Obx(() {
+            final notice = _c.judgeNotice.value;
+            return _Footer(
+              leading: TextButton(onPressed: _saving ? null : () => _save(reset: true), child: const Text('恢复默认')),
+              notice: notice == null ? null : _Notice(notice.$1, error: notice.$2),
+              onSave: _saving ? null : _save,
+            );
+          }),
+        ],
+      ),
     );
   }
 }
@@ -978,7 +1071,7 @@ class _ContextSectionState extends State<_ContextSection> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _FieldGrid(children: [
-            _field('group.context_max_messages', '期间的群消息最多带', '被限频或预算挡下、没回复的群消息，只带最新的；0 表示不限',
+            _field('group.context_max_messages', '期间的群消息最多带', '上次回复之后没回复的群消息，只带最新的；0 表示不限',
                 suffix: '条'),
             _field('group.context_max_chars', '期间的群消息最多带', '更早的只告诉模型省略了几条；0 表示不限', suffix: '字'),
             _field('history.compact_at_tokens', '历史超过多少时压缩', '按下一次请求的大小估算；0 表示不按 token 压缩',

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from agent_core.core.clock import now_ms
-from agent_core.core.models import Attachment, InboundMessage, NeutralMessage, RawEvent, Scene
+from agent_core.core.models import Attachment, InboundMessage, NeutralMessage, Quote, RawEvent, Scene
 from agent_core.core.network import DIRECT, Proxy, ProxyMode, normalize_proxy_url
 from agent_core.core.settings import DEFAULTS
 from agent_core.infra.db.models import (
@@ -374,7 +374,8 @@ class TurnContext:
     missing: list[NeutralMessage]
     """该提供商的原始历史之后、由别的提供商回复过的轮次（中间换过提供商又换回来），要补在原始历史后面。"""
     pending: list[NeutralMessage]
-    """上一轮之后没触发回复（被限频或预算挡下）的群消息，拼进本轮 user 消息里，模型才知道期间聊了什么。"""
+    """上一轮之后没触发回复的群消息（没 @ 机器人、模型判断不用回、被限频或预算挡下），拼进本轮 user 消息里，
+    模型才知道期间聊了什么。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,8 +420,12 @@ class ConversationRepo(_Repo):
         provider: str | None,
         model: str | None,
         profile_id: int | None,
+        judging: bool = False,
     ) -> Ingested:
-        """开始处理：更新或新建会话和发言人，插入入站消息；需要回复时插入问答（排队中）。重复调用是安全的。"""
+        """开始处理：更新或新建会话和发言人，插入入站消息；需要回复时插入问答（排队中）。重复调用是安全的。
+
+        judging：要先让模型判断回不回复。消息先按没触发保存，问答从「判断中」开始，provider / model 是判断用的模型配置。
+        """
         now = now_ms()
         async with self._sessions.begin() as s:
             conv = await s.scalar(
@@ -478,13 +483,15 @@ class ConversationRepo(_Repo):
                     is_mention=int(msg.is_mention),
                     triggered=int(triggered),
                     platform_ts=msg.platform_ts,
+                    sender_key=msg.sender_key,
+                    quote_json=_quote_json(msg.quote),
                     created_at=now,
                 )
                 s.add(existing)
                 await s.flush()
 
             turn = None
-            if triggered and provider and model:
+            if (triggered or judging) and provider and model:
                 turn = await s.scalar(select(Turn).where(Turn.inbound_message_id == existing.id))
                 if turn is None:
                     turn = Turn(
@@ -493,7 +500,7 @@ class ConversationRepo(_Repo):
                         provider_profile_id=profile_id,
                         provider=provider,
                         model=model,
-                        status="queued",
+                        status="judging" if judging else "queued",
                         input_tokens=0,
                         output_tokens=0,
                         cache_read_tokens=0,
@@ -512,6 +519,60 @@ class ConversationRepo(_Repo):
                 turn_status=turn.status if turn else None,
                 duplicate=duplicate,
             )
+
+    async def quote_sender(self, conversation_id: int, sender_key: str) -> tuple[bool, str | None] | None:
+        """按发送者标识认出被引用的消息是谁发的：(是不是机器人自己, 发言人标识)；认不出来返回 None。
+
+        机器人发过的消息在发件箱里记着它的标识；别人的要在这个会话里收到过他的消息（带着标识）才认得出来。
+        """
+        async with self._sessions() as s:
+            conv = await s.get(Conversation, conversation_id)
+            if conv is None:
+                return None
+            if await s.scalar(
+                select(exists().where(Outbox.conversation_id == conversation_id, Outbox.sender_key == sender_key))
+            ):
+                return True, None
+            contact = await s.scalar(
+                select(Contact)
+                .join(Message, Message.sender_contact_id == Contact.id)
+                .where(Message.conversation_id == conversation_id, Message.sender_key == sender_key)
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+        if contact is None:
+            return None
+        return False, speaker_label(conv.scene, contact.openid, contact.display_name) or None
+
+    async def start_judged_turn(self, turn_id: int, message_id: int, **turn_fields: Any) -> None:
+        """模型判断要回复：消息改成触发了回复，问答换成回复用的模型配置、开始排队。"""
+        async with self._sessions.begin() as s:
+            await s.execute(update(Message).where(Message.id == message_id).values(triggered=1))
+            await s.execute(update(Turn).where(Turn.id == turn_id).values(status="queued", **turn_fields))
+
+    async def recent(
+        self, *, conversation_id: int, history_epoch: int, before_id: int, limit: int
+    ) -> list[NeutralMessage]:
+        """当前这一段里最近的几条消息（不含系统回复和摘要），按时间正序；判断要不要回复时给模型看。"""
+        sender = aliased(Contact)
+        async with self._sessions() as s:
+            conv = await s.get(Conversation, conversation_id)
+            assert conv is not None
+            rows = (
+                await s.execute(
+                    select(Message, sender)
+                    .outerjoin(sender, Message.sender_contact_id == sender.id)
+                    .where(
+                        Message.conversation_id == conversation_id,
+                        Message.history_epoch == history_epoch,
+                        Message.id < before_id,
+                        or_(Message.direction == "in", and_(Message.direction == "out", Message.turn_id.is_not(None))),
+                    )
+                    .order_by(Message.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        return [_neutral(m, contact, conv.scene) for m, contact in reversed(rows)]
 
     async def get(self, conversation_id: int) -> Conversation | None:
         async with self._sessions() as s:
@@ -542,11 +603,13 @@ class ConversationRepo(_Repo):
             return [(c, n, u) for c, n, u in (await s.execute(stmt)).all()]
 
     async def messages(self, conversation_id: int, *, limit: int, before_id: int | None = None) -> list[dict[str, Any]]:
-        """会话历史，按时间正序；带发言人和问答信息。"""
+        """会话历史，按时间正序；带发言人和问答信息。模型判断不回复的入站消息带上那次判断（skipped_turn_id）。"""
+        skipped = aliased(Turn)
         stmt = (
-            select(Message, Contact, Turn)
+            select(Message, Contact, Turn, skipped.id)
             .outerjoin(Contact, Message.sender_contact_id == Contact.id)
             .outerjoin(Turn, Message.turn_id == Turn.id)
+            .outerjoin(skipped, and_(skipped.inbound_message_id == Message.id, skipped.status == "skipped"))
             .where(Message.conversation_id == conversation_id)
             .order_by(Message.id.desc())
             .limit(limit)
@@ -566,6 +629,8 @@ class ConversationRepo(_Repo):
                 "attachments": json.loads(m.attachments_json or "[]"),
                 "is_mention": bool(m.is_mention),
                 "triggered": bool(m.triggered),
+                "quote": json.loads(m.quote_json) if m.quote_json else None,
+                "skipped_turn_id": skipped_id,
                 "created_at": m.created_at,
                 "sender": None
                 if contact is None
@@ -591,7 +656,7 @@ class ConversationRepo(_Repo):
                     "stop_reason": turn.stop_reason,
                 },
             }
-            for m, contact, turn in reversed(rows)
+            for m, contact, turn, skipped_id in reversed(rows)
         ]
 
     async def clear_history(self, conversation_id: int) -> int:
@@ -739,19 +804,9 @@ class ConversationRepo(_Repo):
             if m.direction == "out" and m.turn_id is None:
                 continue  # 系统回复（指令结果、限频和预算提醒）不进上下文
             kinds.append((m.direction, m.turn_id))
-            if m.direction == "summary":
-                neutral.append(NeutralMessage("user", f"[之前对话的摘要]\n{m.content}"))
+            neutral.append(_neutral(m, contact, conv.scene))
+            if m.direction in ("summary", "out") or m.triggered:
                 last_answered = len(neutral) - 1
-                continue
-            if m.direction == "out":
-                neutral.append(NeutralMessage("assistant", m.content))
-                last_answered = len(neutral) - 1
-            else:
-                label = speaker_label(conv.scene, contact.openid if contact else "", contact.display_name if contact else None)
-                attachments = tuple(Attachment(**a) for a in json.loads(m.attachments_json or "[]"))
-                neutral.append(NeutralMessage("user", m.content, speaker=label or None, attachments=attachments))
-                if m.triggered:
-                    last_answered = len(neutral) - 1
         before = neutral[: last_answered + 1]
         missing = (
             _missing_turns(before, kinds, {r.turn_id for r in raw_rows}, refused) if raw_rows else []
@@ -787,7 +842,10 @@ class ConversationRepo(_Repo):
         deadline: int | None,
         turn_fields: dict[str, Any] | None = None,
     ) -> None:
-        """模型返回：原始消息、出站全文、发件箱（每段一行）和问答结果在同一事务里写入，收件箱同时标为已处理。"""
+        """模型返回：原始消息、出站全文、发件箱（每段一行）和问答结果在同一事务里写入，收件箱同时标为已处理。
+
+        turn_fields 里的 cost_usd 加在已有的费用上：判断要不要回复的费用之前已经记在这一轮上了。
+        """
         now = now_ms()
         async with self._sessions.begin() as s:
             for i, raw in enumerate(provider_messages):
@@ -845,7 +903,10 @@ class ConversationRepo(_Repo):
                     .on_conflict_do_nothing(index_elements=["account_id", "reply_to_msg_id", "msg_seq"])
                 )
             if turn_id is not None and turn_fields:
-                await s.execute(update(Turn).where(Turn.id == turn_id).values(**turn_fields))
+                fields = dict(turn_fields)
+                if "cost_usd" in fields:
+                    fields["cost_usd"] = Turn.cost_usd + fields["cost_usd"]
+                await s.execute(update(Turn).where(Turn.id == turn_id).values(**fields))
             await s.execute(
                 update(InboxEvent)
                 .where(InboxEvent.id == inbox_id)
@@ -855,6 +916,41 @@ class ConversationRepo(_Repo):
 
 def _attachment_dict(a: Any) -> dict[str, Any]:
     return {k: getattr(a, k) for k in ("content_type", "filename", "url", "width", "height", "size")}
+
+
+def _quote_json(q: Quote | None) -> str | None:
+    if q is None:
+        return None
+    data = {
+        "content": q.content,
+        "attachments": [_attachment_dict(a) for a in q.attachments],
+        "by_bot": q.by_bot,
+        "speaker": q.speaker,
+    }
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _quote(text: str | None) -> Quote | None:
+    if not text:
+        return None
+    d = json.loads(text)
+    return Quote(
+        content=d.get("content") or "",
+        attachments=tuple(Attachment(**a) for a in d.get("attachments") or []),
+        by_bot=bool(d.get("by_bot")),
+        speaker=d.get("speaker"),
+    )
+
+
+def _neutral(m: Message, contact: Contact | None, scene: str) -> NeutralMessage:
+    """中立历史的一行；摘要写成开头带「[之前对话的摘要]」的 user 消息。"""
+    if m.direction == "summary":
+        return NeutralMessage("user", f"[之前对话的摘要]\n{m.content}")
+    if m.direction == "out":
+        return NeutralMessage("assistant", m.content)
+    label = speaker_label(scene, contact.openid if contact else "", contact.display_name if contact else None)
+    attachments = tuple(Attachment(**a) for a in json.loads(m.attachments_json or "[]"))
+    return NeutralMessage("user", m.content, speaker=label or None, attachments=attachments, quote=_quote(m.quote_json))
 
 
 def _missing_turns(
@@ -931,7 +1027,7 @@ class TraceRepo(_Repo):
             )
 
     async def turns(self, *, status: str | None, limit: int) -> list[tuple[Turn, Conversation, Message]]:
-        """问答列表，新的在前；带会话和触发它的那条消息。"""
+        """问答列表，新的在前；带会话和触发它的那条消息。不按状态筛选时不列出判断后没回复的（skipped），免得刷屏。"""
         stmt = (
             select(Turn, Conversation, Message)
             .join(Conversation, Turn.conversation_id == Conversation.id)
@@ -939,8 +1035,7 @@ class TraceRepo(_Repo):
             .order_by(Turn.id.desc())
             .limit(limit)
         )
-        if status:
-            stmt = stmt.where(Turn.status == status)
+        stmt = stmt.where(Turn.status == status) if status else stmt.where(Turn.status != "skipped")
         async with self._sessions() as s:
             return [(t, c, m) for t, c, m in (await s.execute(stmt)).all()]
 
@@ -990,7 +1085,8 @@ class UsageRepo(_Repo):
             row = (
                 await s.execute(
                     select(
-                        func.count(Turn.id),
+                        # 判断后没回复的不算一轮问答，费用照算
+                        func.coalesce(func.sum(case((Turn.status.not_in(("judging", "skipped")), 1), else_=0)), 0),
                         func.coalesce(func.sum(case((Turn.status == "succeeded", 1), else_=0)), 0),
                         func.coalesce(func.sum(case((Turn.status == "refused", 1), else_=0)), 0),
                         func.coalesce(func.sum(case((Turn.status == "failed", 1), else_=0)), 0),

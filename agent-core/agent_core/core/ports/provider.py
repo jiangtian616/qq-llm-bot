@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,6 +31,39 @@ class CompactResult:
     """摘要的文字，存进中立历史，换提供商时用。"""
     usage: Usage
     cost_usd: float
+
+
+@dataclass(frozen=True, slots=True)
+class JudgeResult:
+    """判断群消息要不要回复的结果。"""
+
+    reply: bool
+    reason: str
+    usage: Usage
+    cost_usd: float
+    model: str
+    detail: str = ""
+    """请求的摘要（参数、用量、原始输出），记进处理过程。"""
+
+
+# 判断结果的格式：提供商用结构化输出（Claude 的 json_schema、DeepSeek 的 json_object）让模型按它输出。
+JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"reply": {"type": "boolean"}, "reason": {"type": "string"}},
+    "required": ["reply", "reason"],
+    "additionalProperties": False,
+}
+
+
+def parse_judge(text: str) -> tuple[bool, str] | None:
+    """解析模型输出的 {"reply": …, "reason": …}；格式不对返回 None。"""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("reply"), bool):
+        return None
+    return data["reply"], str(data.get("reason") or "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +172,13 @@ class LLMProvider(abc.ABC):
         """把 messages（以一轮的结尾收尾）压缩成一条摘要消息；不支持或没拿到摘要时返回 None。
 
         tools 和平时请求用的一样：历史里有工具调用时，压缩请求也要带上同样的工具。
+        """
+        return None
+
+    async def judge(self, instructions: str, text: str) -> JudgeResult | None:
+        """判断一条群消息要不要回复：instructions 是判断标准和输出格式（作为 system），text 是最近的聊天和这条消息。
+
+        单独一次小请求，不带工具、不进历史、思考力度用最低的；不支持时返回 None（引擎就不回复）。
         """
         return None
 

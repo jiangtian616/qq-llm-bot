@@ -16,6 +16,8 @@
   同时补上它的工具结果：每个工具调用都要有结果，历史才能接着用，压缩请求也拒绝以没有结果的工具调用结尾。
   服务端工具跑太久会返回 pause_turn，原样发回去就接着做。本轮循环里的思考块原样带回，之前各轮的照旧去掉。
 - 没调用回复工具时，回复取最后一次响应里最后一个工具块之后的文字：搜索前那句「我查一下」不发出去。
+- 判断群消息要不要回复（judge()）：单独一次小请求，结构化输出（output_config.format 的 json_schema），
+  effort 用模型支持的最低一档；不传 thinking（新模型关不掉思考，靠 effort 压低），不开提示缓存（每次内容都不一样，写缓存反而多花钱）。
 - 记下这一轮出现过的链接（用户消息、搜索结果、本地工具结果）：回复里的图片、卡片只能用这些。
   回复工具的参数校验不过时，把原因作为出错结果交回模型重来一次，再不合规就照收，由回复编排丢掉不合规的段。
 """
@@ -36,11 +38,14 @@ from anthropic.types import Message
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
 from agent_core.core.network import Proxy, ProxyMode
 from agent_core.core.ports.provider import (
+    JUDGE_SCHEMA,
     CompactResult,
+    JudgeResult,
     LLMProvider,
     ProviderCapabilities,
     ProviderContext,
     ProviderSpec,
+    parse_judge,
 )
 from agent_core.core.ports.tool import Toolset, ToolResult
 from agent_core.core.trace import Stopwatch, Trace, short, timed
@@ -70,6 +75,9 @@ WEB_SEARCH_PRICE = 0.01
 REPLY_ACK = "已发送给用户。"
 SKIPPED_BY_REPLY = "没有执行：这一轮已经回复了。"
 SKIPPED_BY_LIMIT = "没有执行：这一轮的工具调用次数到上限了。"
+
+# 判断要不要回复：输出只有一个小 JSON，max_tokens 里要给思考留点余地。
+JUDGE_MAX_TOKENS = 1024
 
 COMPACT_BETA = "compact-2026-09-04"
 # 摘要请求的 max_tokens 包括摘要前的思考，官方建议留几千。
@@ -501,6 +509,30 @@ class ClaudeProvider(LLMProvider):
             usage=usage,
             cost_usd=estimate_cost(self.model, usage),
         )
+
+    async def judge(self, instructions: str, text: str) -> JudgeResult | None:
+        spec = SPEC.model(self.model)
+        output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": JUDGE_SCHEMA}}
+        effort = spec.efforts[0] if spec is not None and spec.efforts else None
+        if effort is not None:
+            output_config["effort"] = effort
+        response = await self._client.messages.create(
+            model=self.model,
+            max_tokens=JUDGE_MAX_TOKENS,
+            system=instructions,
+            messages=[{"role": "user", "content": text}],
+            output_config=output_config,
+        )
+        usage = _usage(response)
+        cost = estimate_cost(self.model, usage)
+        output = "".join(b.text for b in response.content if b.type == "text")
+        parsed = parse_judge(output) if response.stop_reason != "refusal" else None
+        reply, reason = parsed or (False, f"没拿到判断结果（stop_reason={response.stop_reason}），按不回复处理")
+        detail = (
+            f"模型 {response.model} · effort {effort or '默认'} · stop_reason {response.stop_reason}\n"
+            f"输入 {usage.input_tokens} token · 输出 {usage.output_tokens} token · ${cost:.4f}\n[输出] {output}"
+        )
+        return JudgeResult(reply=reply, reason=reason, usage=usage, cost_usd=cost, model=response.model, detail=detail)
 
     async def aclose(self) -> None:
         await self._client.close()

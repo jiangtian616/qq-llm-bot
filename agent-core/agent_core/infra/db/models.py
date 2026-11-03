@@ -160,6 +160,7 @@ class Message(Base):
     __table_args__ = (
         UniqueConstraint("conversation_id", "direction", "platform_msg_id"),
         Index(None, "conversation_id", "history_epoch", "id"),
+        Index(None, "conversation_id", "sender_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -177,6 +178,10 @@ class Message(Base):
     triggered: Mapped[int] = mapped_column(Integer, default=0)
     platform_ts: Mapped[str | None] = mapped_column(Text)
     turn_id: Mapped[int | None] = mapped_column(ForeignKey("turns.id", ondelete="SET NULL"))
+    # 入站消息的发送者标识（见 core.models.InboundMessage.sender_key），用来认出被引用的消息是谁发的
+    sender_key: Mapped[str | None] = mapped_column(Text)
+    # 引用的消息：{"content", "attachments", "by_bot", "speaker"}，发言人是收到时认出来的
+    quote_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[int] = mapped_column(Integer)
 
 
@@ -233,7 +238,8 @@ class Turn(Base):
     )
     provider: Mapped[str] = mapped_column(Text)
     model: Mapped[str] = mapped_column(Text)
-    # queued / running / succeeded / failed / refused / expired
+    # queued / running / succeeded / failed / refused / expired；
+    # 群里由模型判断要不要回复时，先是 judging，判断不回复就是 skipped（只花了判断的钱）
     status: Mapped[str] = mapped_column(Text, default="queued")
     stop_reason: Mapped[str | None] = mapped_column(Text)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -278,6 +284,7 @@ class Outbox(Base):
     __table_args__ = (
         UniqueConstraint("account_id", "reply_to_msg_id", "msg_seq"),
         Index(None, "status", "next_attempt_at"),
+        Index(None, "conversation_id", "sender_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -302,6 +309,7 @@ class Outbox(Base):
     platform_message_id: Mapped[str | None] = mapped_column(Text)
     platform_ts: Mapped[str | None] = mapped_column(Text)
     ref_idx: Mapped[str | None] = mapped_column(Text)
+    sender_key: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[int] = mapped_column(Integer)
 

@@ -361,7 +361,7 @@ class _Bubble extends StatelessWidget {
     final meta = <String>[
       formatTime(m.createdAt),
       if (!out && m.senderLabel != null) m.senderLabel!,
-      if (!out && !m.triggered) '未触发回复',
+      if (!out && !m.triggered) m.skippedTurnId != null ? '模型判断不回复' : '未回复',
       if (m.attachmentCount > 0) '${m.attachmentCount} 个附件',
       if (m.turn != null) ..._turnMeta(m.turn!),
     ];
@@ -381,17 +381,31 @@ class _Bubble extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (m.quote != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.only(left: 8),
+                    decoration: BoxDecoration(
+                      border: Border(left: BorderSide(color: theme.colorScheme.outlineVariant, width: 3)),
+                    ),
+                    child: Text(
+                      m.quote!,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    ),
+                  ),
                 SelectableText(m.content.isEmpty ? '（空消息）' : m.content),
                 const SizedBox(height: 4),
                 Text.rich(
                   TextSpan(children: [
                     TextSpan(text: meta.join(' · ')),
-                    if (m.turn != null) ...[
+                    if ((m.turn?.id ?? m.skippedTurnId) case final turnId?) ...[
                       const TextSpan(text: ' · '),
                       WidgetSpan(
                         alignment: PlaceholderAlignment.middle,
                         child: InkWell(
-                          onTap: () => showTurnTraceDialog(context, m.turn!.id),
+                          onTap: () => showTurnTraceDialog(context, turnId),
                           child: Text('处理过程',
                               style: theme.textTheme.labelSmall?.copyWith(
                                   color: theme.colorScheme.primary, decoration: TextDecoration.underline)),

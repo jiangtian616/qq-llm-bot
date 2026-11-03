@@ -15,12 +15,14 @@ const turnStatuses = {
   'refused': '拒答',
   'running': '处理中',
   'queued': '排队中',
+  'judging': '判断中',
+  'skipped': '跳过',
   'expired': '已过期',
 };
 
 Color turnStatusColor(String status) => switch (status) {
       'succeeded' => Colors.green,
-      'running' || 'queued' => Colors.orange,
+      'running' || 'queued' || 'judging' => Colors.orange,
       'failed' => Colors.red,
       _ => Colors.grey,
     };
@@ -35,6 +37,7 @@ const _outboxStatuses = {
 };
 
 const _kindIcons = {
+  'judge': Icons.rule_outlined,
   'context': Icons.input,
   'request': Icons.smart_toy_outlined,
   'search': Icons.travel_explore,

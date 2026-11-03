@@ -19,7 +19,7 @@ from agent_core.core.bus import BusEvent
 from agent_core.core.clock import start_of_local_day_ms
 from agent_core.core.ports.provider import ProviderSpec
 from agent_core.core.network import ProxyMode, normalize_proxy_url
-from agent_core.core.settings import DEFAULTS, GLOBAL_ONLY_PREFIXES, SCOPES
+from agent_core.core.settings import DEFAULTS, GLOBAL_ONLY_PREFIXES, GROUP_REPLY_MODES, SCOPES
 
 DEFAULT_INTENTS = 1 << 25  # GROUP_AND_C2C_EVENT：群聊和单聊事件
 
@@ -50,6 +50,10 @@ def _checked_setting(key: str, value: Any) -> Any:
             return normalize_proxy_url(value) if value.strip() else ""
         if key in ("network.proxy_for_providers", "network.proxy_for_qq") and not isinstance(value, bool):
             raise ValueError(f"{key} 要是 true 或 false")
+        if key == "group.reply_mode" and value not in GROUP_REPLY_MODES:
+            raise ValueError(f"群消息回复方式只能是 {'、'.join(GROUP_REPLY_MODES)}")
+        if key == "group.judge.prompt" and not isinstance(value, str):
+            raise ValueError("判断标准要是字符串")
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     return value

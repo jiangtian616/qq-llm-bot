@@ -24,7 +24,7 @@ from agent_core.core.ports.channel import ChannelAdapter, ChannelContext
 from agent_core.infra.http import FetchError, client_session, fetch_public
 from agent_core.plugins.channel_qq.constants import API_BASE, ErrorCode, FileType
 from agent_core.plugins.channel_qq.errors import MediaUnavailableError, QQApiError
-from agent_core.plugins.channel_qq.event_parser import EventParser
+from agent_core.plugins.channel_qq.event_parser import EventParser, sender_key
 from agent_core.plugins.channel_qq.openapi_sender import OpenApiSender
 from agent_core.plugins.channel_qq.token_manager import TokenManager
 
@@ -90,10 +90,12 @@ class QQAdapter(ChannelAdapter):
             payload["content"] = card_text(message.card)
             note = f"图文卡片被拒（{e}），改发文字"
             body = await self._post_message(message, payload)
+        ref_idx = (body.get("ext_info") or {}).get("ref_idx")
         return SendResult(
             platform_message_id=body.get("id"),
             platform_ts=body.get("timestamp"),
-            ref_idx=(body.get("ext_info") or {}).get("ref_idx"),
+            ref_idx=ref_idx,
+            sender_key=sender_key(ref_idx),
             note=note,
         )
 

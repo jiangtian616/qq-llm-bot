@@ -22,6 +22,9 @@ class ConfigController extends GetxController {
   /// 「上下文与历史」卡片上的提示：(内容, 是否错误)。
   final contextNotice = Rxn<(String, bool)>();
 
+  /// 「由模型判断要不要回复」卡片上的提示：(内容, 是否错误)。
+  final judgeNotice = Rxn<(String, bool)>();
+
   bool get coreRunning => repository.coreStatus.value == CoreStatus.running;
 
   @override

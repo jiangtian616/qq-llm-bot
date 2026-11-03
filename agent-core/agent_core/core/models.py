@@ -53,6 +53,19 @@ class Attachment:
 
 
 @dataclass(frozen=True, slots=True)
+class Quote:
+    """消息引用的那条消息。平台推送时带着它的内容和附件；是谁发的由引擎按 sender_key 在本会话里查。"""
+
+    content: str = ""
+    attachments: tuple[Attachment, ...] = ()
+    sender_key: str | None = None
+    """被引用消息的发送者标识（见 InboundMessage.sender_key），用来认出是谁发的，包括机器人自己。"""
+    by_bot: bool = False
+    speaker: str | None = None
+    """被引用消息的发言人标识；by_bot 为真或者认不出来时为空。"""
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     account_id: int
     scene: Scene
@@ -66,6 +79,9 @@ class InboundMessage:
     quote_msg_id: str | None = None
     attachments: tuple[Attachment, ...] = ()
     event_id: str | None = None
+    quote: Quote | None = None
+    sender_key: str | None = None
+    """平台给这条消息的引用索引里标识发送者的那部分；同一个人在同一个群里不变，用来认出被引用的消息是谁发的。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +106,8 @@ class SendResult:
     platform_message_id: str | None
     platform_ts: str | None = None
     ref_idx: str | None = None
+    sender_key: str | None = None
+    """ref_idx 里标识发送者（机器人自己）的部分，见 InboundMessage.sender_key。"""
     note: str | None = None
     """发送时的说明（比如卡片被拒、改发了文字），记进发送记录。"""
 
@@ -131,6 +149,8 @@ class NeutralMessage:
     attachments: tuple[Attachment, ...] = ()
     images: tuple[ImageData, ...] = ()
     """要让模型看到的图片（提供商声明支持 vision 时才会有），放在文字前面。"""
+    quote: Quote | None = None
+    """引用的消息；组装上下文时写成文字前面的「[引用……]」，它的图片和本条的图片一起交给模型。"""
 
 
 @dataclass(frozen=True, slots=True)

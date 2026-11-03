@@ -20,6 +20,7 @@
 - 上下文缓存自动开启，按前缀匹配；system prompt 保持固定，作为第一条 system 消息发送。
 - 没有官方的历史压缩，compaction 为 False，compact() 用基类的默认实现返回 None，引擎只保留最近几轮。
 - 错误按官方错误码分类（quick_start/error_codes）：429 / 500 / 503 和网络错误自动重试 2 次；401、402 这类直接失败，报中文原因。
+- 判断群消息要不要回复（judge()）：单独一次小请求，JSON 输出（response_format=json_object），关掉思考模式。
 - Base URL 可以用环境变量 DEEPSEEK_BASE_URL 覆盖（官方示例里用的就是这个名字），验证时指向本地模拟服务。
 """
 
@@ -37,7 +38,15 @@ from typing import Any
 import aiohttp
 
 from agent_core.core.models import GenerateResult, NeutralMessage, Usage
-from agent_core.core.ports.provider import LLMProvider, ProviderCapabilities, ProviderContext, ProviderSpec
+from agent_core.core.ports.provider import (
+    JUDGE_SCHEMA,
+    JudgeResult,
+    LLMProvider,
+    ProviderCapabilities,
+    ProviderContext,
+    ProviderSpec,
+    parse_judge,
+)
 from agent_core.core.ports.tool import Tool, Toolset, ToolResult
 from agent_core.core.trace import Stopwatch, Trace, short, timed
 from agent_core.infra.http import client_session
@@ -58,6 +67,8 @@ EMPTY_ASSISTANT_TEXT = "（没有回复）"
 
 MAX_RETRIES = 2
 RETRY_BACKOFF_S = 1.0
+# 判断要不要回复：输出只有一个小 JSON。
+JUDGE_MAX_TOKENS = 512
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _STATUS_TEXT = {
     400: "请求格式错误",
@@ -371,6 +382,32 @@ class DeepSeekProvider(LLMProvider):
             log.warning("DeepSeek strict 模式（/beta）请求失败，改用普通地址：%s", e)
             self._strict = False
             return await self._complete(self._body(messages, tools, strict=False))
+
+    async def judge(self, instructions: str, text: str) -> JudgeResult | None:
+        # json_object 模式要求提示词里出现「json」并给出格式样例，这里补在判断标准后面。
+        system = f"{instructions}\n\n输出 json，格式：{json.dumps(JUDGE_SCHEMA['properties'], ensure_ascii=False)}"
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}],
+            "max_tokens": JUDGE_MAX_TOKENS,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+            "thinking": {"type": "disabled"},
+        }
+        data, usage = await self._complete(body)
+        cost = estimate_cost(self.model, usage)
+        choice = (data.get("choices") or [{}])[0]
+        output = (choice.get("message") or {}).get("content") or ""
+        finish = choice.get("finish_reason")
+        reply, reason = parse_judge(output) or (False, f"没拿到判断结果（finish_reason={finish}），按不回复处理")
+        detail = (
+            f"模型 {data.get('model') or self.model} · 不思考 · finish_reason {finish}\n"
+            f"输入 {usage.input_tokens + usage.cache_read_tokens} token（缓存命中 {usage.cache_read_tokens}）"
+            f" · 输出 {usage.output_tokens} token · ${cost:.4f}\n[输出] {output}"
+        )
+        return JudgeResult(
+            reply=reply, reason=reason, usage=usage, cost_usd=cost, model=data.get("model") or self.model, detail=detail
+        )
 
     async def search(self, query: str) -> list[dict[str, Any]]:
         """调 DeepSeek 的 Search 接口（POST /v1/tools/search）。"""

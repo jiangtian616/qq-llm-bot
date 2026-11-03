@@ -62,7 +62,8 @@ uv run --no-project --with pillow python packaging/make_icons.py        # 从 as
 - Claude 发请求时去掉之前各轮历史里的 thinking 块（本轮工具循环里的原样带回）：图片换成文字标记、改了系统提示词以后，思考块前面的内容和生成时不一样，Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.1 发回这样的思考块会返回 400。DeepSeek 同样去掉 `reasoning_content`（不带 tools 时官方说不用回传），并把连续的同角色消息合并成一条再发。
 - 历史按 `history_epoch` 分段，旧记录保留，但不再进上下文。`/清空` 时 epoch 加 1，从零开始。
 - 历史压缩（`AgentEngine._maybe_compact`）：每轮结束后估算下一次请求的 token 数，超过 `history.compact_at_tokens` 或当前这一段超过 `history.max_turns` 轮时，把较早的部分交给提供商的 `compact()` 压成摘要，最近 `history.keep_recent_turns` 轮原文保留，开始新的一段（`ConversationRepo.start_epoch`）。Claude 用官方按需压缩（beta `compact-2026-09-04`），返回的 compaction 块放在新一段最前面原样发回，之后带着它的请求都走 beta 接口；摘要文字另存一条 `direction=summary` 的中立消息。保留的最近几轮在中立历史里也挪到新一段（按回复数从后往前数，不算拒答），换了提供商重建时才看得到；摘要写得比它们晚，读取时按「摘要在前」排序（`load_context` 和会话页都是）。模型不支持压缩时只保留最近几轮。压缩的费用记在触发它的那一轮上。
-- 群里推过来的消息都触发回复，推哪些（仅 @ / 全部消息）只由 QQ 客户端的群设置决定，软件里不再有对应的配置项。被限频或预算挡下、没回复的群消息会拼进下一轮的 user 消息，只带最新的 `group.context_max_messages` 条、`group.context_max_chars` 字，更早的换成一行「省略了更早的 N 条群消息」。图片只随当前这一轮发给模型，存进历史时换成「[图片1]」这样的文字标记。
+- 平台推哪些群消息（仅 @ / 全部消息）由 QQ 客户端的群设置决定；推过来的里面回复哪些看 `group.reply_mode`：`mention`（默认，只回 @ 或引用机器人的）、`all`、`auto`（没 @ 的每条先用 `provider.judge()` 单独问一次，标准是 `group.judge.prompt`，模型配置是 `group.judge.profile_id`）。判断的费用和处理过程记在这条消息的问答上：要回复就改成排队（`start_judged_turn`，费用累加），不回复就是 `skipped`（`/turns` 默认不列出）。没回复的群消息（没 @、判断不回、被限频或预算挡下）会拼进下一轮的 user 消息，只带最新的 `group.context_max_messages` 条、`group.context_max_chars` 字，更早的换成一行「省略了更早的 N 条群消息」。图片只随当前这一轮发给模型，存进历史时换成「[图片1]」这样的文字标记。
+- 引用消息（message_type 103）：被引用消息的内容和附件在 `msg_elements` 里，存进 `messages.quote_json`，组装上下文时写成「[引用 某人 的消息：…]」，图片和本条的一起交给模型。是谁发的靠引用索引里的发送者标识（`sender_key`：REFIDX 解码后去掉第一个 16 字节块，按实测同一个人在同一个群里不变；机器人发消息返回的 ref_idx 和别人引用它时的不同，只有这部分对得上），入站消息和发件箱各存一份，`ConversationRepo.quote_sender` 查。
 - 指令结果、限频和预算提醒这类系统回复，`turn_id` 为空，不进模型上下文。
 
 ### 分层配置

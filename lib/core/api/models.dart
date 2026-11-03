@@ -333,6 +333,8 @@ class ChatMessage {
     required this.createdAt,
     this.senderLabel,
     this.turn,
+    this.quote,
+    this.skippedTurnId,
   });
 
   final int id;
@@ -349,6 +351,12 @@ class ChatMessage {
   final String? senderLabel;
   final TurnSummary? turn;
 
+  /// 引用的消息，写成「引用 某人：内容」这样一行。
+  final String? quote;
+
+  /// 模型判断不回复时那次判断的问答 ID，点开能看理由。
+  final int? skippedTurnId;
+
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
         id: json['id'] as int,
         isOutgoing: json['direction'] == 'out',
@@ -361,7 +369,20 @@ class ChatMessage {
         createdAt: _time(json['created_at'])!,
         senderLabel: (json['sender'] as Map<String, dynamic>?)?['label'] as String?,
         turn: json['turn'] == null ? null : TurnSummary.fromJson(json['turn'] as Map<String, dynamic>),
+        quote: _quoteLine(json['quote'] as Map<String, dynamic>?),
+        skippedTurnId: json['skipped_turn_id'] as int?,
       );
+
+  static String? _quoteLine(Map<String, dynamic>? q) {
+    if (q == null) return null;
+    final who = q['by_bot'] == true ? '机器人' : (q['speaker'] as String?) ?? '一条消息';
+    final attachments = (q['attachments'] as List<dynamic>? ?? const []).length;
+    final content = [
+      if ((q['content'] as String? ?? '').isNotEmpty) q['content'] as String,
+      if (attachments > 0) '[$attachments 个附件]',
+    ].join(' ');
+    return '引用 $who：${content.isEmpty ? '（空）' : content}';
+  }
 }
 
 class InboxItem {
@@ -560,7 +581,7 @@ class TurnItem {
   final String conversationLabel;
   final int? inboxId;
 
-  /// queued / running / succeeded / failed / refused / expired
+  /// queued / running / succeeded / failed / refused / expired / judging / skipped
   final String status;
   final String provider;
   final String model;
