@@ -8,6 +8,10 @@ msg_elements 里 msg_idx 等于 ref_msg_idx 的那一项就是被引用消息的
 第 2、3 块随发送者变，后 3 块随群变；同一个人（包括机器人自己）在同一个群里，后 80 字节总是一样。
 机器人发消息时接口返回的 ref_idx 和别人引用它时看到的不是同一个值，只有这后 80 字节对得上，所以拿它来认出被引用的消息是谁发的。
 这不是官方文档写明的格式，解析不了就当认不出来。
+
+@ 别人：全量模式（GROUP_MESSAGE_CREATE）的 content 里，@ 某人写成 <@member_openid>，@全体成员写成 <@all>，
+被 @ 的人（昵称、is_you 是不是机器人自己）在 mentions 里。@ 机器人的消息全量模式下只推这一种事件，
+所以 mentions 里有 is_you 就算 @ 了机器人；开头的这个 @ 去掉，和 GROUP_AT_MESSAGE_CREATE 一致，句中的换成昵称。
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ _REF_PREFIX = "REFIDX_"
 _REF_BYTES = 96
 # QQ 表情在文字里是 <faceType=6,faceId="0",ext="eyJ0ZXh0IjoiIn0=">，ext 是 base64 的 {"text": "…"}。
 _FACE = re.compile(r'<faceType=\d+,faceId="[^"]*",ext="([^"]*)">')
+_MENTION = re.compile(r"<@!?([0-9A-Za-z_-]+)>( ?)")
 
 
 def sender_key(ref_idx: str | None) -> str | None:
@@ -38,9 +43,38 @@ def sender_key(ref_idx: str | None) -> str | None:
     return raw[16:].hex() if len(raw) == _REF_BYTES else None
 
 
-def clean_content(content: str | None) -> str:
-    """去掉前导空格（群里 @ 机器人的消息，@ 部分已被平台去掉，只剩空格），表情换成它的文字或「[表情]」。"""
-    return _FACE.sub(_face_text, content or "").strip()
+def clean_content(content: str | None, mentions: list[Any] | None = None, *, keep_self: bool = False) -> str:
+    """去掉前导空格（群里 @ 机器人的消息，@ 部分已被平台去掉，只剩空格），表情换成它的文字或「[表情]」，
+    <@openid> 换成「@昵称」（昵称从 mentions 里找）。开头 @ 机器人自己的去掉，keep_self 时也换成昵称（收件箱展示用）。
+    """
+    text = _FACE.sub(_face_text, content or "")
+    people = {
+        key: m
+        for m in mentions or []
+        if isinstance(m, dict)
+        for key in (m.get("member_openid"), m.get("id"), m.get("user_openid"))
+        if key
+    }
+
+    def mention_text(match: re.Match[str]) -> str:
+        openid, space = match.groups()
+        if openid == "all":
+            return "@全体成员" + space
+        m = people.get(openid) or {}
+        if m.get("is_you") and not keep_self and not text[: match.start()].strip():
+            return ""
+        return f"@{m.get('username') or '群成员'}{space}"
+
+    return _MENTION.sub(mention_text, text).strip()
+
+
+def display_content(payload: dict[str, Any]) -> str:
+    """收件箱里展示的消息文字：和存进历史的一样清理，但 @ 机器人的也留着。"""
+    return clean_content(payload.get("content"), payload.get("mentions"), keep_self=True)
+
+
+def mentions_bot(payload: dict[str, Any]) -> bool:
+    return any(isinstance(m, dict) and m.get("is_you") for m in payload.get("mentions") or [])
 
 
 def _face_text(match: re.Match[str]) -> str:
@@ -62,7 +96,7 @@ class EventParser:
                     scene=Scene.GROUP,
                     target=d["group_openid"],
                     sender=author.get("member_openid", ""),
-                    is_mention=event.event_type == EventType.GROUP_AT_MESSAGE_CREATE,
+                    is_mention=event.event_type == EventType.GROUP_AT_MESSAGE_CREATE or mentions_bot(d),
                 )
             case EventType.C2C_MESSAGE_CREATE:
                 openid = author.get("user_openid", "")
@@ -81,7 +115,7 @@ class EventParser:
             target_openid=target,
             sender_openid=sender,
             platform_msg_id=d["id"],
-            content=clean_content(d.get("content")),
+            content=clean_content(d.get("content"), d.get("mentions")),
             is_mention=is_mention,
             platform_ts=d.get("timestamp"),
             quote_msg_id=ref.get("message_id"),

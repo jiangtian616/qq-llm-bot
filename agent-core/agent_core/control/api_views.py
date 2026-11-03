@@ -17,6 +17,7 @@ from agent_core.core.models import Scene
 from agent_core.core.ports.channel import RecallError
 from agent_core.core.trace import Stopwatch
 from agent_core.infra.db.repos import speaker_label
+from agent_core.plugins.channel_qq.event_parser import display_content
 
 BOT_STATE_NO_PERMISSION = 11253
 """QQ：群机器人状态接口只对白名单机器人开放。"""
@@ -464,12 +465,14 @@ def _json_or_text(raw: str | None) -> Any:
 
 
 def _content_of(raw_json: str | None) -> str:
+    """收件箱事件的消息文字（表情、<@openid> 换成能看的文字）；按原始事件现算，旧数据也一样。"""
     if not raw_json:
         return ""
     try:
-        return str(json.loads(raw_json).get("content") or "")
-    except (ValueError, AttributeError):
+        payload = json.loads(raw_json)
+    except ValueError:
         return ""
+    return display_content(payload) if isinstance(payload, dict) else ""
 
 
 def _str_or_none(value: Any) -> str | None:
