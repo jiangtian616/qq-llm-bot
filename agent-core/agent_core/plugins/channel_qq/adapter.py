@@ -1,6 +1,7 @@
 """QQAdapter：渠道插槽的 QQ 实现。
 
 图片（msg_type=7）先上传成 file_info 再发；图文卡片（msg_type=8）直接带 card 发，发不出去（比如没有权限）就退回成文字。
+撤回只支持群消息，发出 2 分钟内；机器人是普通成员时只能撤回自己发的（发件箱里的都是）。
 """
 
 from __future__ import annotations
@@ -20,9 +21,9 @@ from agent_core.core.models import (
     SendErrorClass,
     SendResult,
 )
-from agent_core.core.ports.channel import ChannelAdapter, ChannelContext
+from agent_core.core.ports.channel import ChannelAdapter, ChannelContext, RecallError
 from agent_core.infra.http import FetchError, client_session, fetch_public
-from agent_core.plugins.channel_qq.constants import API_BASE, ErrorCode, FileType
+from agent_core.plugins.channel_qq.constants import API_BASE, GROUP_RECALL_WINDOW_S, ErrorCode, FileType
 from agent_core.plugins.channel_qq.errors import MediaUnavailableError, QQApiError
 from agent_core.plugins.channel_qq.event_parser import EventParser, sender_key
 from agent_core.plugins.channel_qq.openapi_sender import OpenApiSender
@@ -33,6 +34,12 @@ log = logging.getLogger(__name__)
 _ALREADY_SENT = {ErrorCode.DUPLICATE_MSG_SEQ}
 _FATAL = {ErrorCode.MESSAGE_TOO_LONG, ErrorCode.MUTED, ErrorCode.UNSUPPORTED_FILE_FORMAT, ErrorCode.FILE_TOO_LARGE}
 _EXPIRED = {ErrorCode.REPLY_EXPIRED_OR_LIMIT}
+_RECALL_ERRORS = {
+    ErrorCode.RECALL_INVALID: "请求参数无效",
+    ErrorCode.RECALL_NO_PERMISSION: "没有权限撤回这条消息",
+    ErrorCode.RECALL_EXPIRED: "发出超过 2 分钟，平台不允许撤回",
+    ErrorCode.RECALL_FAILED: "平台撤回失败，请稍后重试",
+}
 
 # 被动回复：群聊 5 分钟内最多 5 次，单聊 60 分钟内最多 4 次。
 _REPLY_WINDOWS = {
@@ -115,6 +122,18 @@ class QQAdapter(ChannelAdapter):
         if 400 <= status < 500 and status != 429:
             return SendErrorClass.FATAL
         return SendErrorClass.RETRYABLE
+
+    def recall_window(self, scene: Scene) -> int | None:
+        return GROUP_RECALL_WINDOW_S if scene == Scene.GROUP else None
+
+    async def recall(self, scene: Scene, target_openid: str, platform_message_id: str) -> None:
+        if scene != Scene.GROUP:
+            raise RecallError("只能撤回群聊消息")
+        try:
+            await self._get_sender().recall_group_message(target_openid, platform_message_id)
+        except QQApiError as e:
+            reason = _RECALL_ERRORS.get(e.code) if e.code is not None else None
+            raise RecallError(reason or f"撤回失败：{e}", code=e.code) from e
 
     async def get_conversation_state(self, scene: Scene, target_openid: str) -> dict[str, Any] | None:
         if scene != Scene.GROUP:

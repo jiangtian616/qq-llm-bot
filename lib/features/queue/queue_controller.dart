@@ -86,6 +86,7 @@ class QueueController extends GetxController {
   Future<String?> retryInbox(int id) => _run(() => repository.retryInbox(id));
   Future<String?> retryOutbox(int id) => _run(() => repository.retryOutbox(id));
   Future<String?> cancelOutbox(int id) => _run(() => repository.cancelOutbox(id));
+  Future<String?> recallOutbox(int id) => _run(() => repository.recallOutbox(id));
 
   Future<String?> _run(Future<void> Function() action) async {
     try {

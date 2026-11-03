@@ -24,6 +24,7 @@ const _outboxStatuses = {
   'failed': '失败',
   'expired': '已过期',
   'cancelled': '已取消',
+  'recalled': '已撤回',
 };
 
 const _eventTypes = {
@@ -206,6 +207,10 @@ class _OutboxTab extends GetView<QueueController> {
                                   onPressed: () async => _report(await controller.cancelOutbox(o.id)),
                                   child: const Text('取消'),
                                 ),
+                              'sent' when o.canRecall => TextButton(
+                                  onPressed: () => _confirmRecall(context, o),
+                                  child: const Text('撤回'),
+                                ),
                               _ => null,
                             },
                             onTap: () => _showDetail(context, o),
@@ -215,6 +220,22 @@ class _OutboxTab extends GetView<QueueController> {
             ),
           ],
         ));
+  }
+
+  Future<void> _confirmRecall(BuildContext context, OutboxItem o) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('撤回这条回复？'),
+        content: Text('「${o.preview}」会从群里撤回。平台只允许撤回发出 2 分钟内的消息；'
+            '撤回后模型的对话历史里仍然有这句话。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('撤回')),
+        ],
+      ),
+    );
+    if (ok == true) _report(await controller.recallOutbox(o.id));
   }
 
   void _showDetail(BuildContext context, OutboxItem o) {
@@ -230,6 +251,8 @@ class _OutboxTab extends GetView<QueueController> {
             'msg_seq': o.msgSeq,
             '生成于': formatTime(o.createdAt),
             if (o.sentAt != null) '发送于': formatTime(o.sentAt),
+            if (o.recalledAt != null) '撤回于': formatTime(o.recalledAt),
+            if (o.canRecall) '可撤回到': formatTime(o.recallUntil),
             if (o.deadline != null) '截止': formatTime(o.deadline),
             '尝试次数': o.attempts,
             if (o.nextAttemptAt != null) '下次重试': formatTime(o.nextAttemptAt),
@@ -255,6 +278,7 @@ class _OutboxTab extends GetView<QueueController> {
         if (o.chunkCount > 1) '第 ${o.chunkIndex + 1}/${o.chunkCount} 段',
         'msg_seq ${o.msgSeq}',
         o.sentAt != null ? '发送于 ${formatTime(o.sentAt)}' : '生成于 ${formatTime(o.createdAt)}',
+        if (o.recalledAt != null) '撤回于 ${formatTime(o.recalledAt)}',
         if (o.deadline != null && o.sentAt == null) '截止 ${formatTime(o.deadline)}',
         if (o.attempts > 1) '尝试 ${o.attempts} 次',
         if (o.status == 'pending' && o.nextAttemptAt != null && o.attempts > 0) '下次重试 ${formatTime(o.nextAttemptAt)}',
@@ -291,6 +315,8 @@ const _attemptResults = {
   'retry': '失败，稍后重试',
   'failed': '失败',
   'expired': '已过期',
+  'recalled': '已撤回',
+  'recall_failed': '撤回失败',
 };
 
 DetailSection _traceSection(int turnId, void Function(int) open) => DetailSection(
@@ -300,7 +326,7 @@ DetailSection _traceSection(int turnId, void Function(int) open) => DetailSectio
     );
 
 String _attemptLine(OutboxAttempt a) => [
-      '第 ${a.attempt} 次',
+      if (!a.result.startsWith('recall')) '第 ${a.attempt} 次',
       formatTime(a.startedAt),
       _attemptResults[a.result] ?? a.result,
       if (a.error != null) '${a.errorCode != null ? '[${a.errorCode}] ' : ''}${a.error}',

@@ -434,6 +434,8 @@ class OutboxItem {
     this.lastErrorCode,
     this.lastError,
     this.sentAt,
+    this.recalledAt,
+    this.recallUntil,
   });
 
   final int id;
@@ -450,6 +452,12 @@ class OutboxItem {
   final int? lastErrorCode;
   final String? lastError;
   final DateTime? sentAt;
+  final DateTime? recalledAt;
+
+  /// 已发送的回复最晚什么时候还能撤回；不能撤回（单聊、还没发出）时为空。
+  final DateTime? recallUntil;
+
+  bool get canRecall => recallUntil != null && DateTime.now().isBefore(recallUntil!);
 
   factory OutboxItem.fromJson(Map<String, dynamic> json) => OutboxItem(
         id: json['id'] as int,
@@ -466,6 +474,8 @@ class OutboxItem {
         lastErrorCode: json['last_error_code'] as int?,
         lastError: json['last_error'] as String?,
         sentAt: _time(json['sent_at']),
+        recalledAt: _time(json['recalled_at']),
+        recallUntil: _time(json['recall_until']),
       );
 }
 

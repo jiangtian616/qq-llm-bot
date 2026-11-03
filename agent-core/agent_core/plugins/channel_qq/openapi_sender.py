@@ -1,4 +1,4 @@
-"""调用 QQ OpenAPI：发群聊 / 单聊消息、上传富媒体、取网关地址、查群内机器人状态。"""
+"""调用 QQ OpenAPI：发群聊 / 单聊消息、撤回群消息、上传富媒体、取网关地址、查群内机器人状态。"""
 
 from __future__ import annotations
 
@@ -46,6 +46,10 @@ class OpenApiSender:
 
     async def send_c2c_message(self, user_openid: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.request("POST", f"/v2/users/{user_openid}/messages", payload)
+
+    async def recall_group_message(self, group_openid: str, message_id: str) -> None:
+        """成功时 HTTP 200、没有响应体。"""
+        await self.request("DELETE", f"/v2/groups/{group_openid}/messages/{message_id}")
 
     async def upload_group_file(self, group_openid: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.request("POST", f"/v2/groups/{group_openid}/files", payload)

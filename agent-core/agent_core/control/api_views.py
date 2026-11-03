@@ -14,6 +14,8 @@ from agent_core.control.state import ControlState
 from agent_core.core.bus import BusEvent
 from agent_core.core.clock import now_ms
 from agent_core.core.models import Scene
+from agent_core.core.ports.channel import RecallError
+from agent_core.core.trace import Stopwatch
 from agent_core.infra.db.repos import speaker_label
 
 BOT_STATE_NO_PERMISSION = 11253
@@ -192,7 +194,8 @@ def build_views_router() -> APIRouter:
     async def queue_outbox(request: Request, limit: int = 100) -> list[dict[str, Any]]:
         s = _ctl(request)
         rows = await s.db.outbox.list(status=request.query_params.get("status"), limit=min(max(limit, 1), 500))
-        return [_outbox_view(o, c) for o, c in rows]
+        windows: dict[tuple[int, str], int | None] = {}
+        return [_outbox_view(o, c, await _recall_until(s, o, c, windows)) for o, c in rows]
 
     @r.get("/queue/outbox/{outbox_id}")
     async def outbox_detail(outbox_id: int, request: Request) -> dict[str, Any]:
@@ -203,7 +206,7 @@ def build_views_router() -> APIRouter:
         o, c = row
         payload = _json_or_text(o.payload_json)
         return {
-            **_outbox_view(o, c),
+            **_outbox_view(o, c, await _recall_until(s, o, c, {})),
             "content": _outbox_text(payload) if isinstance(payload, dict) else "",
             "payload": payload,
             "turn_id": o.turn_id,
@@ -234,6 +237,43 @@ def build_views_router() -> APIRouter:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, reason)
         await s.bus.publish(BusEvent("queue.changed"))
         return {"status": "cancelled"}
+
+    @r.post("/queue/outbox/{outbox_id}/recall")
+    async def recall_outbox(outbox_id: int, request: Request) -> dict[str, Any]:
+        """撤回一条已经发出的回复（目前只有群聊，发出 2 分钟内）。成败都记进发送记录。"""
+        s = _ctl(request)
+        row = await s.db.outbox.get(outbox_id)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "回复不存在")
+        o, c = row
+        if o.status != "sent" or not o.platform_message_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "只有已经发出的回复可以撤回")
+        until = await _recall_until(s, o, c, {})
+        if until is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "只能撤回群聊里的回复")
+        if now_ms() > until:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "发出超过 2 分钟，平台不允许撤回")
+        channel = await s.connections.channel(o.account_id)
+        watch = Stopwatch()
+        try:
+            await channel.recall(Scene(c.scene), c.target_openid, o.platform_message_id)
+        except Exception as e:
+            reason = str(e) if isinstance(e, RecallError) else f"撤回失败：{type(e).__name__}: {e}"
+            code = e.code if isinstance(e, RecallError) else None
+            await s.db.traces.add_attempt(
+                outbox_id, attempt=o.attempts, result="recall_failed", error_code=code, error=reason[:2000],
+                started_at=watch.started_at, duration_ms=watch.ms,
+            )
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, reason) from e
+        await s.db.outbox.mark(outbox_id, status="recalled", recalled_at=now_ms())
+        await s.db.traces.add_attempt(
+            outbox_id, attempt=o.attempts, result="recalled", started_at=watch.started_at, duration_ms=watch.ms
+        )
+        await s.db.events.add(
+            "info", "outbox", f"已撤回发到「{_conversation_label(c)}」的回复 #{outbox_id}", account_id=o.account_id
+        )
+        await s.bus.publish(BusEvent("queue.changed"))
+        return {"status": "recalled"}
 
     # ---- 问答过程 ----
 
@@ -313,7 +353,24 @@ def _inbox_view(e: Any) -> dict[str, Any]:
     }
 
 
-def _outbox_view(o: Any, c: Any) -> dict[str, Any]:
+async def _recall_until(s: ControlState, o: Any, c: Any, windows: dict[tuple[int, str], int | None]) -> int | None:
+    """已发送的回复最晚什么时候还能撤回（毫秒时间戳）；不能撤回（还没发、单聊、渠道不支持）时为 None。
+
+    windows 缓存每个账号、场景的撤回时限，列表里不用每行都去取渠道。
+    """
+    if o.status != "sent" or not o.sent_at or not o.platform_message_id:
+        return None
+    key = (o.account_id, c.scene)
+    if key not in windows:
+        try:
+            windows[key] = (await s.connections.channel(o.account_id)).recall_window(Scene(c.scene))
+        except Exception:
+            windows[key] = None
+    window = windows[key]
+    return None if window is None else o.sent_at + window * 1000
+
+
+def _outbox_view(o: Any, c: Any, recall_until: int | None = None) -> dict[str, Any]:
     return {
         "id": o.id,
         "account_id": o.account_id,
@@ -330,6 +387,8 @@ def _outbox_view(o: Any, c: Any) -> dict[str, Any]:
         "last_error_code": o.last_error_code,
         "last_error": o.last_error,
         "sent_at": o.sent_at,
+        "recalled_at": o.recalled_at,
+        "recall_until": recall_until,
         "created_at": o.created_at,
         "preview": _preview(_outbox_text(json.loads(o.payload_json))),
     }

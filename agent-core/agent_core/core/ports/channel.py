@@ -26,6 +26,14 @@ class ChannelContext:
     """调 QQ OpenAPI 用的代理（network.proxy_for_qq）。"""
 
 
+class RecallError(Exception):
+    """撤回失败；消息是给用户看的原因，code 是平台的错误码（有的话）。"""
+
+    def __init__(self, message: str, *, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class ChannelAdapter(abc.ABC):
     """渠道插槽：把平台事件转成统一消息、把统一回复发回平台。"""
 
@@ -47,6 +55,14 @@ class ChannelAdapter(abc.ABC):
     def classify_send_error(self, error: Exception) -> SendErrorClass:
         """按平台的错误码给发送失败分类；默认都当作可重试。"""
         return SendErrorClass.RETRYABLE
+
+    def recall_window(self, scene: Scene) -> int | None:
+        """可选能力：发出后多少秒内可以撤回；None 表示这个场景不支持撤回。"""
+        return None
+
+    async def recall(self, scene: Scene, target_openid: str, platform_message_id: str) -> None:
+        """撤回机器人发出的一条消息；失败时抛 RecallError。"""
+        raise RecallError("这个渠道不支持撤回消息")
 
     async def get_conversation_state(self, scene: Scene, target_openid: str) -> dict[str, Any] | None:
         """可选能力：查询会话在平台上的状态（如 QQ 群里的消息接收设置）。不支持时返回 None。"""

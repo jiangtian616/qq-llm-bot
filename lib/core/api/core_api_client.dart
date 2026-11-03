@@ -145,6 +145,8 @@ class CoreApiClient {
 
   Future<void> cancelOutbox(int id) => _send('POST', '/queue/outbox/$id/cancel');
 
+  Future<void> recallOutbox(int id) => _send('POST', '/queue/outbox/$id/recall');
+
   /// 收件箱、发件箱各状态的数量。
   Future<({Map<String, int> inbox, Map<String, int> outbox})> stats() async {
     final json = await _get('/stats') as Map<String, dynamic>;

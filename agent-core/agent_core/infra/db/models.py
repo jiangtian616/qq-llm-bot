@@ -298,7 +298,7 @@ class Outbox(Base):
     chunk_count: Mapped[int] = mapped_column(Integer, default=1)
     msg_type: Mapped[int] = mapped_column(Integer, default=0)  # 0 文本、2 Markdown、7 富媒体
     payload_json: Mapped[str] = mapped_column(Text)
-    # pending / sending / sent / failed / expired / cancelled
+    # pending / sending / sent / failed / expired / cancelled / recalled（发出后又撤回了）
     status: Mapped[str] = mapped_column(Text, default="pending")
     deadline: Mapped[int | None] = mapped_column(Integer)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -311,6 +311,7 @@ class Outbox(Base):
     ref_idx: Mapped[str | None] = mapped_column(Text)
     sender_key: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[int | None] = mapped_column(Integer)
+    recalled_at: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[int] = mapped_column(Integer)
 
 

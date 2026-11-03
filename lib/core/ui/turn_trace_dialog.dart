@@ -34,6 +34,7 @@ const _outboxStatuses = {
   'failed': '失败',
   'expired': '已过期',
   'cancelled': '已取消',
+  'recalled': '已撤回',
 };
 
 const _kindIcons = {

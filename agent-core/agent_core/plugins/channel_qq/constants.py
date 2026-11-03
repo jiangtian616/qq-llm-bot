@@ -64,6 +64,14 @@ class ErrorCode(enum.IntEnum):
     UNSUPPORTED_FILE_FORMAT = 850019
     MEDIA_DOWNLOAD_FAILED = 850026
     FILE_TOO_LARGE = 850031
+    RECALL_INVALID = 40061001
+    RECALL_NO_PERMISSION = 40062003
+    RECALL_EXPIRED = 40064004
+    RECALL_FAILED = 50065001
+
+
+# 群消息发出后 2 分钟内可以撤回（v2/groups/{group_openid}/messages/{message_id} DELETE）。
+GROUP_RECALL_WINDOW_S = 120
 
 
 class FileType(enum.IntEnum):

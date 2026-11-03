@@ -27,4 +27,5 @@ class QueueRepository {
   Future<void> retryInbox(int id) => _api.retryInbox(id);
   Future<void> retryOutbox(int id) => _api.retryOutbox(id);
   Future<void> cancelOutbox(int id) => _api.cancelOutbox(id);
+  Future<void> recallOutbox(int id) => _api.recallOutbox(id);
 }
