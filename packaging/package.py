@@ -67,12 +67,20 @@ class FlutterBuild:
         self.cmd = ["flutter", "build", target, "--release"]
         self.log = BUILD / f"flutter-{target}.log"
         self.log.parent.mkdir(parents=True, exist_ok=True)
-        print("+", " ".join(self.cmd), f"（后台运行，输出写到 {self.log}）", flush=True)
+        env = os.environ.copy()
+        note = ""
+        if target == "macos":
+            # macOS 的 release 构建默认是通用二进制，arm64 和 x86_64 各编译一遍（Dart 和 Swift 都是）。
+            # 核心服务只有本机架构，包本来就只能在本机架构上运行，桌面端也只编本机架构，省掉一半。
+            # FLUTTER_XCODE_<设置名> 会原样传给 xcodebuild，Dart 的 AOT 编译也按 ARCHS 来。
+            env.setdefault("FLUTTER_XCODE_ARCHS", "arm64" if machine() == "arm64" else "x86_64")
+            note = f"，只编 {env['FLUTTER_XCODE_ARCHS']}"
+        print("+", " ".join(self.cmd), f"（后台运行{note}，输出写到 {self.log}）", flush=True)
         started = time.monotonic()
         with self.log.open("wb") as out:
             # flutter 在 Windows 上是 .bat，要经过 shell 才能启动。
             proc = subprocess.Popen(
-                self.cmd, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, shell=sys.platform == "win32"
+                self.cmd, cwd=ROOT, env=env, stdout=out, stderr=subprocess.STDOUT, shell=sys.platform == "win32"
             )
         self.code = 0
         self.minutes = 0.0
@@ -166,18 +174,38 @@ def main() -> int:
     ver = version()
     DIST.mkdir(exist_ok=True)
     target = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    timings: dict[str, float] = {}
     flutter = None if args.skip_flutter else FlutterBuild(target)
+    started = time.monotonic()
     try:
         core = build_core(args.skip_core)
+        if not args.skip_core:
+            timings["核心服务"] = (time.monotonic() - started) / 60
     finally:
         # 核心服务失败时也等桌面端结束，不留下没人管的后台进程。
         if flutter:
             flutter.wait()
+    if flutter:
+        timings["桌面端"] = flutter.minutes
+    started = time.monotonic()
     package = {"windows": package_windows, "macos": package_macos, "linux": package_linux}[target]
     out = package(core, ver)
     shutil.rmtree(DIST / "stage", ignore_errors=True)
+    timings["打包"] = (time.monotonic() - started) / 60
     print(f"已生成：{out}（{out.stat().st_size / 1024 / 1024:.1f} MB）")
+    report(timings)
     return 0
+
+
+def report(timings: dict[str, float]) -> None:
+    """打印各部分用时（核心服务和桌面端是同时构建的）。
+
+    在 GitHub Actions 上同时写成注解：构建日志要登录 GitHub 才能看，注解在运行的摘要页上谁都看得到，也能从接口读出来。
+    """
+    text = "，".join(f"{name} {minutes:.1f} 分钟" for name, minutes in timings.items())
+    print(f"用时：{text}", flush=True)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=打包用时::{text}", flush=True)
 
 
 if __name__ == "__main__":
