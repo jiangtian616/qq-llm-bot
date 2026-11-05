@@ -1,4 +1,4 @@
-"""打包便携版：核心服务（Nuitka 独立目录）+ 桌面端（flutter build --release）放在一起，打成一个包。
+r"""打包便携版：核心服务（Nuitka 独立目录）和桌面端（flutter build --release）同时构建，放在一起打成一个包。
 
     Windows  qq-llm-bot-<版本>-windows-x64.zip       解压即用；数据在 %APPDATA%\qq-llm-bot
     macOS    qq-llm-bot-<版本>-macos-<arm64|x64>.zip  解压出 .app；数据在 ~/Library/Application Support/qq-llm-bot
@@ -21,6 +21,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,8 +45,7 @@ def machine() -> str:
 
 def run(cmd: list[str], **kw) -> None:  # noqa: ANN003
     print("+", " ".join(str(c) for c in cmd), flush=True)
-    # flutter 在 Windows 上是 .bat，要经过 shell 才能启动。
-    subprocess.run(cmd, check=True, shell=sys.platform == "win32" and cmd[0] == "flutter", **kw)
+    subprocess.run(cmd, check=True, **kw)
 
 
 def build_core(skip: bool) -> Path:
@@ -55,9 +56,44 @@ def build_core(skip: bool) -> Path:
     return core
 
 
-def build_flutter(target: str, skip: bool) -> None:
-    if not skip:
-        run(["flutter", "build", target, "--release"], cwd=ROOT)
+class FlutterBuild:
+    """在后台构建桌面端，和核心服务同时进行。
+
+    两边互不依赖；Nuitka 分析代码时只用得上一个核，空着的核正好给 Flutter。
+    输出先写进日志文件，结束时一次打印出来，免得和核心服务的输出搅在一起。
+    """
+
+    def __init__(self, target: str) -> None:
+        self.cmd = ["flutter", "build", target, "--release"]
+        self.log = BUILD / f"flutter-{target}.log"
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        print("+", " ".join(self.cmd), f"（后台运行，输出写到 {self.log}）", flush=True)
+        started = time.monotonic()
+        with self.log.open("wb") as out:
+            # flutter 在 Windows 上是 .bat，要经过 shell 才能启动。
+            proc = subprocess.Popen(
+                self.cmd, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, shell=sys.platform == "win32"
+            )
+        self.code = 0
+        self.minutes = 0.0
+
+        def watch() -> None:
+            # 结束时就记下用时，不算等核心服务的时间。
+            self.code = proc.wait()
+            self.minutes = (time.monotonic() - started) / 60
+
+        self.watcher = threading.Thread(target=watch, daemon=True)
+        self.watcher.start()
+
+    def wait(self) -> None:
+        self.watcher.join()
+        # 原样输出：Windows 上 Flutter 和 MSBuild 按系统代码页输出，按 UTF-8 解码会把中文变成乱码。
+        sys.stdout.flush()
+        sys.stdout.buffer.write(self.log.read_bytes())
+        sys.stdout.buffer.flush()
+        if self.code:
+            raise subprocess.CalledProcessError(self.code, self.cmd)
+        print(f"桌面端构建完成（用时 {self.minutes:.1f} 分钟）", flush=True)
 
 
 def fresh(path: Path) -> Path:
@@ -129,16 +165,16 @@ def main() -> int:
 
     ver = version()
     DIST.mkdir(exist_ok=True)
-    core = build_core(args.skip_core)
-    if sys.platform == "win32":
-        build_flutter("windows", args.skip_flutter)
-        out = package_windows(core, ver)
-    elif sys.platform == "darwin":
-        build_flutter("macos", args.skip_flutter)
-        out = package_macos(core, ver)
-    else:
-        build_flutter("linux", args.skip_flutter)
-        out = package_linux(core, ver)
+    target = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    flutter = None if args.skip_flutter else FlutterBuild(target)
+    try:
+        core = build_core(args.skip_core)
+    finally:
+        # 核心服务失败时也等桌面端结束，不留下没人管的后台进程。
+        if flutter:
+            flutter.wait()
+    package = {"windows": package_windows, "macos": package_macos, "linux": package_linux}[target]
+    out = package(core, ver)
     shutil.rmtree(DIST / "stage", ignore_errors=True)
     print(f"已生成：{out}（{out.stat().st_size / 1024 / 1024:.1f} MB）")
     return 0

@@ -69,8 +69,10 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --project agent-core --group build
 
-      # Nuitka 要编译上千个 C 文件，缓存编译结果（ccache / clcache，都在 Nuitka 的缓存目录里），按文件内容命中。
+      # Nuitka 的缓存目录里有两样东西：按字节码打包的模块（第三方包和标准库）的分析结果，按源码内容命中，
+      # runner 镜像升级了编译器也不失效；我们自己的代码编译成 C 的结果（ccache / clcache）。
       # 取最近一次 main 上保存的缓存；保存时用 run_id 做键，每次都存一份新的，旧的由 GitHub 按 LRU 清掉。
+      # 键名里的 v2 是缓存内容的版本：打包方式大改、旧缓存用不上时加一，免得每次都恢复一堆没用的文件。
       - name: Restore Nuitka cache
         uses: actions/cache/restore@v4
         with:
@@ -78,8 +80,8 @@ jobs:
             ~/AppData/Local/Nuitka/Nuitka/Cache
             ~/Library/Caches/Nuitka
             ~/.cache/Nuitka
-          key: nuitka-${{ matrix.name }}-${{ github.run_id }}
-          restore-keys: nuitka-${{ matrix.name }}-
+          key: nuitka-v2-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: nuitka-v2-${{ matrix.name }}-
 
       - name: Flutter pub get
         run: flutter pub get
@@ -92,7 +94,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: *nuitka-cache
-          key: nuitka-${{ matrix.name }}-${{ github.run_id }}
+          key: nuitka-v2-${{ matrix.name }}-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         with:
