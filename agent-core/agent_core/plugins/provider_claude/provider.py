@@ -348,8 +348,9 @@ class ClaudeProvider(LLMProvider):
         rejected = False  # 回复校验不过已经交回模型重来过一次
         while True:
             watch = Stopwatch()
+            kwargs = self._request(convo, tools, keep_thinking_from=turn_start)
             try:
-                response = await self._create(convo, tools, keep_thinking_from=turn_start)
+                response = await self._create(kwargs)
             except Exception as e:
                 trace.add(
                     "request",
@@ -358,6 +359,7 @@ class ClaudeProvider(LLMProvider):
                     error=f"{type(e).__name__}: {e}",
                     started_at=watch.started_at,
                     duration_ms=watch.ms,
+                    request=kwargs,
                 )
                 raise
             history_len = len(convo)
@@ -379,6 +381,7 @@ class ClaudeProvider(LLMProvider):
                 data={"response": raw_assistant["content"]},
                 started_at=watch.started_at,
                 duration_ms=watch.ms,
+                request=kwargs,
             )
             _trace_searches(trace, response.content, queries)
             result = partial(
@@ -452,7 +455,8 @@ class ClaudeProvider(LLMProvider):
                 convo.append(tool_message)
                 produced.append(tool_message)
 
-    async def _create(self, messages: Sequence[Any], tools: Toolset, *, keep_thinking_from: int) -> Message:
+    def _request(self, messages: Sequence[Any], tools: Toolset, *, keep_thinking_from: int) -> dict[str, Any]:
+        """一次请求的参数，也原样记进问答过程的请求快照；走不走 beta 接口看 _create()。"""
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -465,7 +469,10 @@ class ClaudeProvider(LLMProvider):
             kwargs["system"] = self.ctx.system_prompt
         if tools:
             kwargs["tools"] = tool_definitions(tools)
-        if _has_compaction(messages):
+        return kwargs
+
+    async def _create(self, kwargs: dict[str, Any]) -> Message:
+        if _has_compaction(kwargs["messages"]):
             return await self._client.beta.messages.create(**kwargs, betas=[COMPACT_BETA])
         return await self._client.messages.create(**kwargs)
 

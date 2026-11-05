@@ -9,15 +9,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from agent_core.agent.media import attachment_note, is_image
 from agent_core.control.auth import require_token
 from agent_core.control.state import ControlState
 from agent_core.core.bus import BusEvent
 from agent_core.core.clock import now_ms
 from agent_core.core.models import Scene
 from agent_core.core.ports.channel import RecallError
-from agent_core.core.trace import Stopwatch
+from agent_core.core.trace import Stopwatch, expand_requests
 from agent_core.infra.db.repos import speaker_label
-from agent_core.plugins.channel_qq.event_parser import display_content
+from agent_core.plugins.channel_qq.event_parser import attachments_of, display_content, mention_names, sender_name
 
 BOT_STATE_NO_PERMISSION = 11253
 """QQ：群机器人状态接口只对白名单机器人开放。"""
@@ -175,7 +176,7 @@ def build_views_router() -> APIRouter:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "事件不存在")
         return {
             **_inbox_view(e),
-            "content": _content_of(e.raw_json),
+            "content": _content_of(_payload_of(e.raw_json)),
             "raw": _json_or_text(e.raw_json),
             "turn_id": await _ctl(request).db.traces.turn_for_inbox(inbox_id),
         }
@@ -196,7 +197,8 @@ def build_views_router() -> APIRouter:
         s = _ctl(request)
         rows = await s.db.outbox.list(status=request.query_params.get("status"), limit=min(max(limit, 1), 500))
         windows: dict[tuple[int, str], int | None] = {}
-        return [_outbox_view(o, c, await _recall_until(s, o, c, windows)) for o, c in rows]
+        names = await s.db.outbox.replied_to(rows)
+        return [_outbox_view(o, c, await _recall_until(s, o, c, windows), names.get(o.id)) for o, c in rows]
 
     @r.get("/queue/outbox/{outbox_id}")
     async def outbox_detail(outbox_id: int, request: Request) -> dict[str, Any]:
@@ -206,8 +208,9 @@ def build_views_router() -> APIRouter:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "回复不存在")
         o, c = row
         payload = _json_or_text(o.payload_json)
+        names = await s.db.outbox.replied_to([row])
         return {
-            **_outbox_view(o, c, await _recall_until(s, o, c, {})),
+            **_outbox_view(o, c, await _recall_until(s, o, c, {}), names.get(o.id)),
             "content": _outbox_text(payload) if isinstance(payload, dict) else "",
             "payload": payload,
             "turn_id": o.turn_id,
@@ -296,11 +299,12 @@ def build_views_router() -> APIRouter:
         if row is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "问答不存在（可能已经过期清理）")
         t, c, m, contact = row
+        with_request = await s.db.traces.steps_with_request(turn_id)
         return {
             **_turn_view(t, c, m),
             "question": m.content,
             "sender": speaker_label(c.scene, contact.openid, contact.display_name) if contact else None,
-            "steps": [_step_view(x) for x in await s.db.traces.steps(turn_id)],
+            "steps": [_step_view(x, x.id in with_request) for x in await s.db.traces.steps(turn_id)],
             "outbox": [
                 {
                     "id": o.id,
@@ -313,6 +317,25 @@ def build_views_router() -> APIRouter:
                 for o in await s.db.traces.outbox_for_turn(turn_id)
             ],
         }
+
+    @r.get("/turns/{turn_id}/steps/{step_id}/request")
+    async def step_request(turn_id: int, step_id: int, request: Request) -> dict[str, Any]:
+        """请求模型这一步实际发出去的完整请求（模型、参数、system、tools、messages）。
+
+        new_from：messages 里从这一条起是这次请求新加的（第一次请求是本轮的 user 消息，之后是上一次请求以来新增的）。
+        """
+        snapshots = await _ctl(request).db.traces.request_snapshots(turn_id)
+        ids = [sid for sid, _ in snapshots]
+        if step_id not in ids:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "这一步不是请求模型，或者问答已经清理")
+        i = ids.index(step_id)
+        full = expand_requests([snap for _, snap in snapshots])[i]
+        if full is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "这次请求的完整上下文没有记录，或者已经超期清理")
+        snap = snapshots[i][1]
+        messages = full.get("messages") or []
+        new_from = snap["keep_messages"] if snap.get("delta") else max(len(messages) - 1, 0)
+        return {"index": i + 1, "count": len(ids), "new_from": new_from, "request": full}
 
     # ---- 日志 ----
 
@@ -338,6 +361,7 @@ def build_views_router() -> APIRouter:
 
 
 def _inbox_view(e: Any) -> dict[str, Any]:
+    payload = _payload_of(e.raw_json)
     return {
         "id": e.id,
         "account_id": e.account_id,
@@ -350,7 +374,21 @@ def _inbox_view(e: Any) -> dict[str, Any]:
         "attempts": e.attempts,
         "last_error": e.last_error,
         "conversation_id": e.conversation_id,
-        "preview": _preview(_content_of(e.raw_json)),
+        "sender": sender_name(payload),
+        "mentions": mention_names(payload),
+        "attachments": [
+            {
+                "label": attachment_note(a),
+                "image_url": a.url if is_image(a) else None,
+                "content_type": a.content_type,
+                "filename": a.filename,
+                "width": a.width,
+                "height": a.height,
+                "size": a.size,
+            }
+            for a in attachments_of(payload)
+        ],
+        "preview": _preview(_content_of(payload)),
     }
 
 
@@ -371,12 +409,14 @@ async def _recall_until(s: ControlState, o: Any, c: Any, windows: dict[tuple[int
     return None if window is None else o.sent_at + window * 1000
 
 
-def _outbox_view(o: Any, c: Any, recall_until: int | None = None) -> dict[str, Any]:
+def _outbox_view(o: Any, c: Any, recall_until: int | None = None, reply_to_name: str | None = None) -> dict[str, Any]:
+    payload = json.loads(o.payload_json)
     return {
         "id": o.id,
         "account_id": o.account_id,
         "conversation_id": o.conversation_id,
         "conversation_label": _conversation_label(c),
+        "reply_to_name": reply_to_name,
         "reply_to_msg_id": o.reply_to_msg_id,
         "msg_seq": o.msg_seq,
         "chunk_index": o.chunk_index,
@@ -391,7 +431,8 @@ def _outbox_view(o: Any, c: Any, recall_until: int | None = None) -> dict[str, A
         "recalled_at": o.recalled_at,
         "recall_until": recall_until,
         "created_at": o.created_at,
-        "preview": _preview(_outbox_text(json.loads(o.payload_json))),
+        "preview": _preview(_outbox_text(payload)),
+        "images": _outbox_images(payload),
     }
 
 
@@ -420,8 +461,9 @@ def _turn_view(t: Any, c: Any, m: Any) -> dict[str, Any]:
     }
 
 
-def _step_view(x: Any) -> dict[str, Any]:
+def _step_view(x: Any, has_request: bool = False) -> dict[str, Any]:
     return {
+        "id": x.id,
         "seq": x.seq,
         "kind": x.kind,
         "title": x.title,
@@ -430,6 +472,7 @@ def _step_view(x: Any) -> dict[str, Any]:
         "error": x.error,
         "started_at": x.started_at,
         "duration_ms": x.duration_ms,
+        "has_request": has_request,
     }
 
 
@@ -454,6 +497,13 @@ def _outbox_text(payload: dict[str, Any]) -> str:
     return f"[图片] {image_url}" if image_url else str(payload.get("content") or "")
 
 
+def _outbox_images(payload: dict[str, Any]) -> list[str]:
+    """回复里的图片：图片消息的链接，卡片的封面。"""
+    card = payload.get("card")
+    url = card.get("pic_url") if isinstance(card, dict) else payload.get("image_url")
+    return [url] if isinstance(url, str) and url else []
+
+
 def _json_or_text(raw: str | None) -> Any:
     """原样存的 JSON 解析出来给桌面端排版；解析不了就当文本。"""
     if not raw:
@@ -464,15 +514,19 @@ def _json_or_text(raw: str | None) -> Any:
         return raw
 
 
-def _content_of(raw_json: str | None) -> str:
-    """收件箱事件的消息文字（表情、<@openid> 换成能看的文字）；按原始事件现算，旧数据也一样。"""
-    if not raw_json:
-        return ""
+def _payload_of(raw_json: str | None) -> dict[str, Any]:
+    """收件箱事件的原始事件体；解析不了时为空。"""
     try:
-        payload = json.loads(raw_json)
+        payload = json.loads(raw_json) if raw_json else {}
     except ValueError:
-        return ""
-    return display_content(payload) if isinstance(payload, dict) else ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _content_of(payload: dict[str, Any]) -> str:
+    """收件箱事件的消息文字（表情、<@openid> 换成能看的文字，附件写成「[图片]」这样的标记）；按原始事件现算，旧数据也一样。"""
+    notes = [attachment_note(a) for a in attachments_of(payload)]
+    return " ".join(t for t in (display_content(payload), *notes) if t)
 
 
 def _str_or_none(value: Any) -> str | None:

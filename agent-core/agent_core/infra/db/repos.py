@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from agent_core.core.clock import now_ms
-from agent_core.core.models import Attachment, InboundMessage, NeutralMessage, Quote, RawEvent, Scene
+from agent_core.core.models import Attachment, InboundMessage, NeutralMessage, Quote, RawEvent, Scene, person_label
 from agent_core.core.network import DIRECT, Proxy, ProxyMode, normalize_proxy_url
 from agent_core.core.settings import DEFAULTS
 from agent_core.infra.db.models import (
@@ -394,6 +395,15 @@ class OutboxChunk:
         return {"kind": "text", "content": self.content}
 
 
+def _compress(value: Any) -> bytes:
+    return zlib.compress(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def contact_label(contact: Contact) -> str:
+    """桌面端展示用的称呼：本地备注或平台昵称，加上 openid 末 6 位。"""
+    return person_label(contact.display_name or contact.nickname, contact.openid)
+
+
 def speaker_label(scene: str, openid: str, display_name: str | None) -> str:
     """群聊里给 user 消息加的发言人标识；有本地备注就用备注，否则用 openid 末 6 位。单聊不加。"""
     if scene != Scene.GROUP:
@@ -461,6 +471,8 @@ class ConversationRepo(_Repo):
                 s.add(contact)
                 await s.flush()
             contact.last_seen_at = now
+            if msg.sender_name:
+                contact.nickname = msg.sender_name
 
             existing = await s.scalar(
                 select(Message).where(
@@ -479,6 +491,7 @@ class ConversationRepo(_Repo):
                     platform_msg_id=msg.platform_msg_id,
                     quote_msg_id=msg.quote_msg_id,
                     content=msg.content,
+                    display_content=msg.display_content,
                     attachments_json=json.dumps([_attachment_dict(a) for a in msg.attachments], ensure_ascii=False),
                     is_mention=int(msg.is_mention),
                     triggered=int(triggered),
@@ -617,15 +630,13 @@ class ConversationRepo(_Repo):
         if before_id is not None:
             stmt = stmt.where(Message.id < before_id)
         async with self._sessions() as s:
-            conv = await s.get(Conversation, conversation_id)
             rows = (await s.execute(stmt)).all()
-        scene = conv.scene if conv else ""
         return [
             {
                 "id": m.id,
                 "direction": m.direction,
                 "history_epoch": m.history_epoch,
-                "content": m.content,
+                "content": m.display_content or m.content,
                 "attachments": json.loads(m.attachments_json or "[]"),
                 "is_mention": bool(m.is_mention),
                 "triggered": bool(m.triggered),
@@ -637,7 +648,7 @@ class ConversationRepo(_Repo):
                 else {
                     "contact_id": contact.id,
                     "openid": contact.openid,
-                    "label": speaker_label(scene, contact.openid, contact.display_name) or contact.openid,
+                    "label": contact_label(contact),
                     "display_name": contact.display_name,
                 },
                 "turn": None
@@ -1003,6 +1014,7 @@ class TraceRepo(_Repo):
                         error=step.error,
                         started_at=step.started_at,
                         duration_ms=step.duration_ms,
+                        request_z=None if step.request is None else _compress(step.request),
                     )
                 )
 
@@ -1011,6 +1023,29 @@ class TraceRepo(_Repo):
             return list(
                 (await s.scalars(select(TurnStep).where(TurnStep.turn_id == turn_id).order_by(TurnStep.seq))).all()
             )
+
+    async def steps_with_request(self, turn_id: int) -> set[int]:
+        """这一轮里还留着请求快照的步骤 id。"""
+        async with self._sessions() as s:
+            return set(
+                (
+                    await s.scalars(
+                        select(TurnStep.id).where(TurnStep.turn_id == turn_id, TurnStep.request_z.is_not(None))
+                    )
+                ).all()
+            )
+
+    async def request_snapshots(self, turn_id: int) -> list[tuple[int, Any]]:
+        """这一轮所有请求模型步骤的 (步骤 id, 请求快照)，按顺序；快照已清理的为 None。"""
+        async with self._sessions() as s:
+            rows = (
+                await s.execute(
+                    select(TurnStep.id, TurnStep.request_z)
+                    .where(TurnStep.turn_id == turn_id, TurnStep.kind == "request")
+                    .order_by(TurnStep.seq)
+                )
+            ).all()
+        return [(step_id, None if raw is None else json.loads(zlib.decompress(raw))) for step_id, raw in rows]
 
     async def add_attempt(self, outbox_id: int, **fields: Any) -> None:
         async with self._sessions.begin() as s:
@@ -1157,6 +1192,22 @@ class MaintenanceRepo(_Repo):
             "epoch_bumped": len(affected),
         }
 
+    async def purge_request_snapshots(self, account_id: int, cutoff_ms: int) -> int:
+        """清掉这个账号超期的请求快照；问答过程的其它内容跟着聊天记录一起清理。"""
+        turn_ids = (
+            select(Turn.id)
+            .join(Conversation, Turn.conversation_id == Conversation.id)
+            .where(Conversation.account_id == account_id)
+            .scalar_subquery()
+        )
+        async with self._sessions.begin() as s:
+            result = await s.execute(
+                update(TurnStep)
+                .where(TurnStep.turn_id.in_(turn_ids), TurnStep.started_at < cutoff_ms, TurnStep.request_z.is_not(None))
+                .values(request_z=None)
+            )
+        return result.rowcount
+
     async def purge_raw_events(self, account_id: int, cutoff_ms: int) -> int:
         """删除已处理完的超期收件箱事件；还没处理完的不动。"""
         async with self._sessions.begin() as s:
@@ -1224,6 +1275,32 @@ class OutboxRepo(_Repo):
             stmt = stmt.where(Outbox.status == status)
         async with self._sessions() as s:
             return [(o, c) for o, c in (await s.execute(stmt)).all()]
+
+    async def replied_to(self, rows: Sequence[tuple[Outbox, Conversation]]) -> dict[int, str]:
+        """每条回复回的是谁（被回复的那条入站消息的发言人）：{发件箱 id: 称呼}；找不到的不在里面。"""
+        wanted: dict[tuple[int, str], list[int]] = {}
+        for o, _ in rows:
+            if o.reply_to_msg_id:
+                wanted.setdefault((o.conversation_id, o.reply_to_msg_id), []).append(o.id)
+        if not wanted:
+            return {}
+        async with self._sessions() as s:
+            found = (
+                await s.execute(
+                    select(Message.conversation_id, Message.platform_msg_id, Contact)
+                    .join(Contact, Message.sender_contact_id == Contact.id)
+                    .where(
+                        Message.direction == "in",
+                        Message.conversation_id.in_({conv for conv, _ in wanted}),
+                        Message.platform_msg_id.in_({msg for _, msg in wanted}),
+                    )
+                )
+            ).all()
+        return {
+            outbox_id: contact_label(contact)
+            for conv, msg, contact in found
+            for outbox_id in wanted.get((conv, msg), [])
+        }
 
     async def retry(self, outbox_id: int) -> str | None:
         """失败的分段在截止时间前可以重发；沿用同一个 msg_seq，平台会去重，不会发两次。"""

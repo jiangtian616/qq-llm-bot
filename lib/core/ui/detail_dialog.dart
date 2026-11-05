@@ -3,9 +3,15 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'image_thumb.dart';
+
 /// 详情对话框里的一段：标题加一段可选中、可复制的文字。
 class DetailSection {
-  const DetailSection(this.label, this.text, {this.monospace = false, this.action});
+  const DetailSection(this.label, this.text, {this.monospace = false, this.action, this.images = const []});
+
+  /// 一组图片（大一点的缩略图，点开看大图）；text 是每张的说明，复制时用，不显示。
+  static DetailSection? imageList(String label, List<String> urls, {String text = ''}) =>
+      urls.isEmpty ? null : DetailSection(label, text.isEmpty ? urls.join('\n') : text, images: urls);
 
   /// JSON 按缩进排版，等宽显示。字符串原样显示，空值不显示。
   static DetailSection? json(String label, Object? value) {
@@ -26,6 +32,9 @@ class DetailSection {
 
   /// 标题右边的按钮，比如「查看处理过程」。
   final ({String label, VoidCallback onPressed})? action;
+
+  /// 有图片时显示成缩略图，不显示 text。
+  final List<String> images;
 }
 
 /// 查看列表里被截断的长文本。sections 立即显示；load 给出的部分（比如要另外请求的完整内容）拉到后接在后面。
@@ -132,19 +141,22 @@ class _Section extends StatelessWidget {
               ),
             ],
           ),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(6),
+          if (section.images.isNotEmpty)
+            ImageThumbs(urls: section.images, size: 160)
+          else
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: SelectableText(
+                section.text,
+                style: section.monospace
+                    ? const TextStyle(fontFamily: 'Consolas', fontFamilyFallback: ['monospace'], fontSize: 12)
+                    : theme.textTheme.bodyMedium,
+              ),
             ),
-            child: SelectableText(
-              section.text,
-              style: section.monospace
-                  ? const TextStyle(fontFamily: 'Consolas', fontFamilyFallback: ['monospace'], fontSize: 12)
-                  : theme.textTheme.bodyMedium,
-            ),
-          ),
         ],
       ),
     );

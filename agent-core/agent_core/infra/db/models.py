@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     Text,
     UniqueConstraint,
@@ -149,6 +150,8 @@ class Contact(Base):
     kind: Mapped[str] = mapped_column(Text)  # member / user
     openid: Mapped[str] = mapped_column(Text)
     display_name: Mapped[str | None] = mapped_column(Text)
+    # 平台给的昵称，每次收到他的消息时更新；只用于桌面端展示，发言人标识（speaker_label）不用它
+    nickname: Mapped[str | None] = mapped_column(Text)
     first_seen_at: Mapped[int] = mapped_column(Integer)
     last_seen_at: Mapped[int] = mapped_column(Integer)
 
@@ -173,6 +176,8 @@ class Message(Base):
     platform_msg_id: Mapped[str | None] = mapped_column(Text)
     quote_msg_id: Mapped[str | None] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text, default="")
+    # 桌面端展示的文字（@ 带上 openid 末 6 位，见 core.models.InboundMessage.display_content）；和 content 一样时为空
+    display_content: Mapped[str | None] = mapped_column(Text)
     attachments_json: Mapped[str] = mapped_column(Text, default="[]")
     is_mention: Mapped[int] = mapped_column(Integer, default=0)
     triggered: Mapped[int] = mapped_column(Integer, default=0)
@@ -275,6 +280,9 @@ class TurnStep(Base):
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[int] = mapped_column(Integer)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    # 请求模型这一步实际发出去的请求（core/trace.py 的请求快照），zlib 压缩的 JSON；比别的字段大得多，单独读取，
+    # 按 retention.request_snapshots_days 提前清掉
+    request_z: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
 
 
 class Outbox(Base):

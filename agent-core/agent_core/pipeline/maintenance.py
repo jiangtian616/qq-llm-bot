@@ -70,8 +70,15 @@ class MaintenanceWorker:
                     await self._db.settings.resolve("retention.messages_days", account_id=account.id) or 0
                 )
                 raw_days = int(await self._db.settings.resolve("retention.raw_events_days", account_id=account.id) or 0)
+                snapshot_days = int(
+                    await self._db.settings.resolve("retention.request_snapshots_days", account_id=account.id) or 0
+                )
                 if messages_days > 0:
                     item.update(await self._db.maintenance.purge_messages(account.id, now - messages_days * DAY_MS))
+                if snapshot_days > 0:
+                    item["request_snapshots"] = await self._db.maintenance.purge_request_snapshots(
+                        account.id, now - snapshot_days * DAY_MS
+                    )
                 if raw_days > 0:
                     item["raw_events"] = await self._db.maintenance.purge_raw_events(account.id, now - raw_days * DAY_MS)
                 report["accounts"].append(item)

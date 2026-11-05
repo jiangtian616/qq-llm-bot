@@ -82,6 +82,15 @@ class InboundMessage:
     quote: Quote | None = None
     sender_key: str | None = None
     """平台给这条消息的引用索引里标识发送者的那部分；同一个人在同一个群里不变，用来认出被引用的消息是谁发的。"""
+    sender_name: str | None = None
+    """平台给的发送者昵称（有的话）；只用于桌面端展示，不进模型上下文。"""
+    display_content: str | None = None
+    """桌面端展示的消息文字：@ 写成「@昵称(openid 末 6 位)」，开头 @ 机器人的也留着；和 content 一样时为空。"""
+
+
+def person_label(name: str | None, openid: str) -> str:
+    """桌面端展示一个人：「昵称(openid 末 6 位)」，没有昵称时「用户 + 末 6 位」。"""
+    return f"{name}({openid[-6:]})" if name else f"用户{openid[-6:]}"
 
 
 @dataclass(frozen=True, slots=True)

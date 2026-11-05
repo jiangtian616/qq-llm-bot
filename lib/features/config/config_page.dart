@@ -1114,6 +1114,7 @@ class _LimitsSectionState extends State<_LimitsSection> {
     'budget.daily_usd',
     'retention.messages_days',
     'retention.raw_events_days',
+    'retention.request_snapshots_days',
   ];
 
   final _c = Get.find<ConfigController>();
@@ -1140,6 +1141,7 @@ class _LimitsSectionState extends State<_LimitsSection> {
       'tools.web_search.max_uses',
       'retention.messages_days',
       'retention.raw_events_days',
+      'retention.request_snapshots_days',
     ]) {
       final v = int.tryParse(_fields[k]!.text.trim());
       if (v == null || v < 0) return _show('限频、搜索次数和保留天数要填不小于 0 的整数', error: true);
@@ -1194,6 +1196,8 @@ class _LimitsSectionState extends State<_LimitsSection> {
             _field('budget.daily_usd', '每日费用上限', '用完后今天暂停回复；留空表示不限', suffix: '美元'),
             _field('retention.messages_days', '聊天记录保留', '0 表示永久保留', suffix: '天'),
             _field('retention.raw_events_days', '原始事件保留', '收件箱里处理完的事件；0 表示永久', suffix: '天'),
+            _field('retention.request_snapshots_days', '请求快照保留', '问答过程里的完整上下文；0 表示跟着聊天记录清理',
+                suffix: '天'),
           ]),
           const SizedBox(height: 16),
           Text(

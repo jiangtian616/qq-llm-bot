@@ -52,6 +52,8 @@ DEFAULTS: dict[str, Any] = {
     # 聊天记录、收件箱原始事件的保留天数；0 表示永久
     "retention.messages_days": 30,
     "retention.raw_events_days": 30,
+    # 问答过程里每次请求模型的完整请求（查看完整上下文用）保留天数，比聊天记录占地方；0 表示跟着聊天记录一起清理
+    "retention.request_snapshots_days": 7,
     # 核心服务启动后是否自动连接（账号级）
     "connection.auto_connect": False,
     # 网络代理，只有全局级。proxy_mode：none 直连、system 跟随系统代理、custom 用 proxy_url（http://、socks5:// 等）。

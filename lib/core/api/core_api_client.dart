@@ -167,6 +167,9 @@ class CoreApiClient {
 
   Future<TurnDetail> turnDetail(int id) async => TurnDetail.fromJson(await _get('/turns/$id') as Map<String, dynamic>);
 
+  Future<RequestSnapshot> stepRequest(int turnId, int stepId) async =>
+      RequestSnapshot.fromJson(await _get('/turns/$turnId/steps/$stepId/request') as Map<String, dynamic>);
+
   // ---- 用量与维护 ----
 
   Future<UsageToday> usageToday() async => UsageToday.fromJson(await _get('/usage/today') as Map<String, dynamic>);

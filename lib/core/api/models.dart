@@ -395,6 +395,9 @@ class InboxItem {
     required this.preview,
     this.replyDeadline,
     this.lastError,
+    this.sender,
+    this.mentions = const [],
+    this.attachments = const [],
   });
 
   final int id;
@@ -406,6 +409,17 @@ class InboxItem {
   final String? lastError;
   final String preview;
 
+  /// 平台给的发送者昵称；没有时为空。
+  final String? sender;
+
+  /// 消息里 @ 的人的昵称（含「全体成员」）。
+  final List<String> mentions;
+
+  /// 消息的附件；图片有 imageUrl（平台的地址几个小时后会失效）。
+  final List<InboxAttachment> attachments;
+
+  List<String> get imageUrls => [for (final a in attachments) ?a.imageUrl];
+
   factory InboxItem.fromJson(Map<String, dynamic> json) => InboxItem(
         id: json['id'] as int,
         eventType: json['event_type'] as String,
@@ -415,8 +429,34 @@ class InboxItem {
         attempts: json['attempts'] as int,
         lastError: json['last_error'] as String?,
         preview: json['preview'] as String,
+        sender: json['sender'] as String?,
+        mentions: [for (final n in json['mentions'] as List<dynamic>? ?? const []) n as String],
+        attachments: [
+          for (final a in (json['attachments'] as List<dynamic>? ?? const []).cast<Map<String, dynamic>>())
+            _inboxAttachment(a),
+        ],
       );
 }
+
+typedef InboxAttachment = ({
+  String label,
+  String? imageUrl,
+  String? contentType,
+  String? filename,
+  int? width,
+  int? height,
+  int? size,
+});
+
+InboxAttachment _inboxAttachment(Map<String, dynamic> json) => (
+      label: json['label'] as String,
+      imageUrl: json['image_url'] as String?,
+      contentType: json['content_type'] as String?,
+      filename: json['filename'] as String?,
+      width: json['width'] as int?,
+      height: json['height'] as int?,
+      size: json['size'] as int?,
+    );
 
 class OutboxItem {
   const OutboxItem({
@@ -436,6 +476,8 @@ class OutboxItem {
     this.sentAt,
     this.recalledAt,
     this.recallUntil,
+    this.replyToName,
+    this.images = const [],
   });
 
   final int id;
@@ -457,6 +499,12 @@ class OutboxItem {
   /// 已发送的回复最晚什么时候还能撤回；不能撤回（单聊、还没发出）时为空。
   final DateTime? recallUntil;
 
+  /// 回复的是谁（被回复的那条消息的发言人）；找不到时为空。
+  final String? replyToName;
+
+  /// 回复里的图片：图片消息的链接、卡片的封面。
+  final List<String> images;
+
   bool get canRecall => recallUntil != null && DateTime.now().isBefore(recallUntil!);
 
   factory OutboxItem.fromJson(Map<String, dynamic> json) => OutboxItem(
@@ -476,6 +524,8 @@ class OutboxItem {
         sentAt: _time(json['sent_at']),
         recalledAt: _time(json['recalled_at']),
         recallUntil: _time(json['recall_until']),
+        replyToName: json['reply_to_name'] as String?,
+        images: [for (final u in json['images'] as List<dynamic>? ?? const []) u as String],
       );
 }
 
@@ -638,6 +688,7 @@ class TurnItem {
 /// 问答过程里的一步。kind：context / request / search / tool / reply / compose / compaction / note / error。
 class TurnStep {
   const TurnStep({
+    required this.id,
     required this.seq,
     required this.kind,
     required this.title,
@@ -646,8 +697,10 @@ class TurnStep {
     this.data,
     this.error,
     this.durationMs,
+    this.hasRequest = false,
   });
 
+  final int id;
   final int seq;
   final String kind;
   final String title;
@@ -661,7 +714,11 @@ class TurnStep {
   final DateTime startedAt;
   final int? durationMs;
 
+  /// 请求模型这一步记下了实际发出去的完整请求（[RequestSnapshot]），超期会被清理。
+  final bool hasRequest;
+
   factory TurnStep.fromJson(Map<String, dynamic> json) => TurnStep(
+        id: json['id'] as int,
         seq: json['seq'] as int,
         kind: json['kind'] as String,
         title: json['title'] as String,
@@ -670,6 +727,27 @@ class TurnStep {
         error: json['error'] as String?,
         startedAt: _time(json['started_at'])!,
         durationMs: json['duration_ms'] as int?,
+        hasRequest: json['has_request'] as bool? ?? false,
+      );
+}
+
+/// 请求模型时实际发出去的完整请求：模型、参数、system、tools、messages（图片数据和加密内容已去掉）。
+class RequestSnapshot {
+  const RequestSnapshot({required this.index, required this.count, required this.newFrom, required this.request});
+
+  /// 这一轮的第几次请求（从 1 起）、一共几次。
+  final int index;
+  final int count;
+
+  /// messages 里从这一条（下标）起是这次请求新加的。
+  final int newFrom;
+  final Map<String, dynamic> request;
+
+  factory RequestSnapshot.fromJson(Map<String, dynamic> json) => RequestSnapshot(
+        index: json['index'] as int,
+        count: json['count'] as int,
+        newFrom: json['new_from'] as int,
+        request: json['request'] as Map<String, dynamic>,
       );
 }
 

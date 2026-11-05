@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import '../../core/api/models.dart';
 import '../../core/ui/detail_dialog.dart';
 import '../../core/ui/format.dart';
+import '../../core/ui/image_thumb.dart';
 import '../../core/ui/placeholder_view.dart';
 import '../../core/ui/turn_trace_dialog.dart';
 import 'queue_controller.dart';
@@ -131,14 +132,26 @@ class _InboxTab extends GetView<QueueController> {
                         for (final e in controller.inbox)
                           ListTile(
                             leading: _StatusChip(status: e.status, label: _inboxStatuses[e.status] ?? e.status),
-                            title: Text(e.preview.isEmpty ? '（无内容）' : e.preview, maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text([
-                              _eventTypes[e.eventType] ?? e.eventType,
-                              '收到 ${formatTime(e.receivedAt)}',
-                              if (e.replyDeadline != null) '回复截止 ${formatTime(e.replyDeadline)}',
-                              if (e.attempts > 1) '处理 ${e.attempts} 次',
-                              if (e.lastError != null) e.lastError!,
-                            ].join(' · '), maxLines: 2, overflow: TextOverflow.ellipsis),
+                            title: Text.rich(
+                              TextSpan(children: [
+                                if (e.sender != null)
+                                  TextSpan(text: '${e.sender}：', style: const TextStyle(fontWeight: FontWeight.w600)),
+                                TextSpan(text: e.preview.isEmpty ? '（无内容）' : e.preview),
+                              ]),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: _withImages(
+                              Text([
+                                _eventTypes[e.eventType] ?? e.eventType,
+                                if (e.mentions.isNotEmpty) '@ ${e.mentions.join('、')}',
+                                '收到 ${formatTime(e.receivedAt)}',
+                                if (e.replyDeadline != null) '回复截止 ${formatTime(e.replyDeadline)}',
+                                if (e.attempts > 1) '处理 ${e.attempts} 次',
+                                if (e.lastError != null) e.lastError!,
+                              ].join(' · '), maxLines: 2, overflow: TextOverflow.ellipsis),
+                              e.imageUrls,
+                            ),
                             trailing: e.status == 'failed'
                                 ? TextButton(onPressed: () async => _report(await controller.retryInbox(e.id)), child: const Text('重试'))
                                 : null,
@@ -159,6 +172,8 @@ class _InboxTab extends GetView<QueueController> {
         sections: [
           DetailSection.fields('概要', {
             '类型': _eventTypes[e.eventType] ?? e.eventType,
+            if (e.sender != null) '发送人': e.sender!,
+            if (e.mentions.isNotEmpty) '@ 了': e.mentions.join('、'),
             '状态': _inboxStatuses[e.status] ?? e.status,
             '收到': formatTime(e.receivedAt),
             if (e.replyDeadline != null) '回复截止': formatTime(e.replyDeadline),
@@ -168,9 +183,13 @@ class _InboxTab extends GetView<QueueController> {
         ],
         load: () async {
           final d = await controller.repository.inboxDetail(e.id);
+          final images = [for (final a in e.attachments) if (a.imageUrl != null) _attachmentLine(a)];
+          final others = [for (final a in e.attachments) if (a.imageUrl == null) _attachmentLine(a)];
           return [
             if (d.turnId case final turnId?) _traceSection(turnId, openTrace),
             DetailSection('消息内容', d.content),
+            DetailSection.imageList('图片（${images.join('；')}）', e.imageUrls),
+            if (others.isNotEmpty) DetailSection('其它附件', others.join('\n')),
             DetailSection.fields('其它字段', d.extra),
             DetailSection.json('原始事件', d.raw),
           ];
@@ -197,7 +216,10 @@ class _OutboxTab extends GetView<QueueController> {
                           ListTile(
                             leading: _StatusChip(status: o.status, label: _outboxStatuses[o.status] ?? o.status),
                             title: Text(o.preview, maxLines: 1, overflow: TextOverflow.ellipsis),
-                            subtitle: Text(_outboxMeta(o), maxLines: 2, overflow: TextOverflow.ellipsis),
+                            subtitle: _withImages(
+                              Text(_outboxMeta(o), maxLines: 2, overflow: TextOverflow.ellipsis),
+                              o.images,
+                            ),
                             trailing: switch (o.status) {
                               'failed' => TextButton(
                                   onPressed: () async => _report(await controller.retryOutbox(o.id)),
@@ -246,6 +268,7 @@ class _OutboxTab extends GetView<QueueController> {
         sections: [
           DetailSection.fields('概要', {
             '会话': o.conversationLabel,
+            if (o.replyToName != null) '回复给': o.replyToName!,
             '状态': _outboxStatuses[o.status] ?? o.status,
             if (o.chunkCount > 1) '分段': '第 ${o.chunkIndex + 1}/${o.chunkCount} 段',
             'msg_seq': o.msgSeq,
@@ -264,6 +287,7 @@ class _OutboxTab extends GetView<QueueController> {
           return [
             if (d.turnId case final turnId?) _traceSection(turnId, openTrace),
             DetailSection('回复内容', d.content),
+            DetailSection.imageList('图片（点开看大图）', o.images),
             if (d.attempts.isNotEmpty)
               DetailSection('发送记录（${d.attempts.length} 次）', [for (final a in d.attempts) _attemptLine(a)].join('\n')),
             DetailSection.fields('平台信息', d.extra),
@@ -275,6 +299,7 @@ class _OutboxTab extends GetView<QueueController> {
 
   static String _outboxMeta(OutboxItem o) => [
         o.conversationLabel,
+        if (o.replyToName != null) '回复 ${o.replyToName}',
         if (o.chunkCount > 1) '第 ${o.chunkIndex + 1}/${o.chunkCount} 段',
         'msg_seq ${o.msgSeq}',
         o.sentAt != null ? '发送于 ${formatTime(o.sentAt)}' : '生成于 ${formatTime(o.createdAt)}',
@@ -285,6 +310,24 @@ class _OutboxTab extends GetView<QueueController> {
         if (o.lastError != null && o.status != 'sent') '${o.lastErrorCode != null ? '[${o.lastErrorCode}] ' : ''}${o.lastError}',
       ].join(' · ');
 }
+
+/// 列表行的副标题下面加一排小缩略图。
+Widget _withImages(Widget subtitle, List<String> urls) => urls.isEmpty
+    ? subtitle
+    : Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          subtitle,
+          Padding(padding: const EdgeInsets.only(top: 6), child: ImageThumbs(urls: urls)),
+        ],
+      );
+
+/// 附件的一行说明：类型、尺寸、大小。
+String _attachmentLine(InboxAttachment a) => [
+      a.imageUrl == null && a.filename != null ? '${a.label} ${a.filename}' : a.label,
+      if (a.width != null && a.height != null) '${a.width}×${a.height}',
+      if (a.size != null) '${(a.size! / 1024 / 1024).toStringAsFixed(1)} MB',
+    ].join(' · ');
 
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status, required this.label});

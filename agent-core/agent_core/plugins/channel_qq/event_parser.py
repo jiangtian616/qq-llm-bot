@@ -73,6 +73,28 @@ def display_content(payload: dict[str, Any]) -> str:
     return clean_content(payload.get("content"), payload.get("mentions"), keep_self=True)
 
 
+def sender_name(payload: dict[str, Any]) -> str | None:
+    author = payload.get("author")
+    name = author.get("username") if isinstance(author, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
+def mention_names(payload: dict[str, Any]) -> list[str]:
+    """被 @ 的人的昵称，按 mentions 的顺序；@全体成员 也算一个。"""
+    names = [
+        m.get("username") or "群成员"
+        for m in payload.get("mentions") or []
+        if isinstance(m, dict) and m.get("scope") != "all"
+    ]
+    if "<@all>" in str(payload.get("content") or ""):
+        names.append("全体成员")
+    return names
+
+
+def attachments_of(payload: dict[str, Any]) -> list[Attachment]:
+    return [_attachment(a) for a in payload.get("attachments") or [] if isinstance(a, dict)]
+
+
 def mentions_bot(payload: dict[str, Any]) -> bool:
     return any(isinstance(m, dict) and m.get("is_you") for m in payload.get("mentions") or [])
 
@@ -123,6 +145,7 @@ class EventParser:
             event_id=event.event_id,
             quote=_quote(d, ext.get("ref_msg_idx")),
             sender_key=sender_key(ext.get("msg_idx")),
+            sender_name=sender_name(d),
         )
 
 

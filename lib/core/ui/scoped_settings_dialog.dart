@@ -55,6 +55,8 @@ const _specs = <String, _Spec>{
       helper: '和全局上限各算各的，任何一个用完都暂停', nullLabel: '不单独设上限（全局上限照常生效）'),
   'retention.messages_days': _Spec('聊天记录保留天数', _Kind.integer, helper: '0 表示永久保留'),
   'retention.raw_events_days': _Spec('原始事件保留天数', _Kind.integer, helper: '0 表示永久'),
+  'retention.request_snapshots_days':
+      _Spec('请求快照保留天数', _Kind.integer, helper: '问答过程里的完整上下文；0 表示跟着聊天记录清理'),
 };
 
 /// 不从上一层继承的配置项：账号预算只算这个账号的花费，和全局预算同时生效。
@@ -82,6 +84,7 @@ const accountSettingKeys = [
   'budget.daily_usd',
   'retention.messages_days',
   'retention.raw_events_days',
+  'retention.request_snapshots_days',
 ];
 
 /// 会话可以单独设置的配置项；群和单聊各自只显示用得上的。

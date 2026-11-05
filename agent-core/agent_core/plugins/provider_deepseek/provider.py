@@ -260,8 +260,9 @@ class DeepSeekProvider(LLMProvider):
         rejected = False  # 回复校验不过已经交回模型重来过一次
         while True:
             watch = Stopwatch()
+            sent: list[dict[str, Any]] = []
             try:
-                data, step = await self._chat(convo, tools)
+                data, step = await self._chat(convo, tools, sent)
             except Exception as e:
                 trace.add(
                     "request",
@@ -270,6 +271,7 @@ class DeepSeekProvider(LLMProvider):
                     error=f"{type(e).__name__}: {e}",
                     started_at=watch.started_at,
                     duration_ms=watch.ms,
+                    request=sent[-1] if sent else None,
                 )
                 raise
             choice = (data.get("choices") or [{}])[0]
@@ -283,6 +285,7 @@ class DeepSeekProvider(LLMProvider):
                 data={"response": message},
                 started_at=watch.started_at,
                 duration_ms=watch.ms,
+                request=sent[-1],
             )
             # 原样保存接口返回的 message（包括 reasoning_content、tool_calls），之后追加进历史，不改写。
             raw_assistant = {**message, "role": "assistant"}
@@ -369,19 +372,27 @@ class DeepSeekProvider(LLMProvider):
                 lines.append(f"[调用 {_call_name(call)}] {short(_call_arguments(call), 200)}")
         return "\n".join(lines)
 
-    async def _chat(self, messages: Sequence[Any], tools: Toolset) -> tuple[dict[str, Any], Usage]:
-        """strict 模式要走 /beta 地址（Beta 功能）；/beta 请求失败（不是限流、服务器故障）就关掉 strict 改走普通地址，之后都不再用。"""
+    async def _chat(
+        self, messages: Sequence[Any], tools: Toolset, sent: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], Usage]:
+        """strict 模式要走 /beta 地址（Beta 功能）；/beta 请求失败（不是限流、服务器故障）就关掉 strict 改走普通地址，之后都不再用。
+
+        发出去的请求体依次追加到 sent，最后一个是实际得到结果（或最终失败）的那次，记进请求快照。
+        """
         strict = self._strict and any(t.strict for t in tools.local)
         if not strict:
-            return await self._complete(self._body(messages, tools, strict=False))
+            sent.append(self._body(messages, tools, strict=False))
+            return await self._complete(sent[-1])
         try:
-            return await self._complete(self._body(messages, tools, strict=True), beta=True)
+            sent.append(self._body(messages, tools, strict=True))
+            return await self._complete(sent[-1], beta=True)
         except DeepSeekError as e:
             if e.retryable or e.status in (401, 402):
                 raise
             log.warning("DeepSeek strict 模式（/beta）请求失败，改用普通地址：%s", e)
             self._strict = False
-            return await self._complete(self._body(messages, tools, strict=False))
+            sent.append(self._body(messages, tools, strict=False))
+            return await self._complete(sent[-1])
 
     async def judge(self, instructions: str, text: str) -> JudgeResult | None:
         # json_object 模式要求提示词里出现「json」并给出格式样例，这里补在判断标准后面。
