@@ -18,8 +18,8 @@ flutter analyze lib                           # 改完 Dart 代码后跑一遍�
 # 数据库迁移（在 agent-core/ 下；alembic.ini 指向 ./.data/agent-core.db，先用上面的命令建好库）
 uv run alembic revision --autogenerate -m "说明"   # 核心服务启动时会自动升级到最新版本
 
-# 打包便携版（每个平台在自己的系统上；核心服务和桌面端同时构建。第三方包按字节码打包，Nuitka 只把我们自己的代码
-# 编译成 C（例外见 build_core.py 的 STILL_COMPILED），本机首次约 5 分钟，之后有缓存）
+# 打包便携版（每个平台在自己的系统上；核心服务和桌面端同时构建。Python 代码都按字节码打包，只有个别例外编译成 C
+# （见 build_core.py 的 STILL_COMPILED），本机首次约 5 分钟，之后有缓存；CI 不出 Intel 版 macOS 的包）
 uv run --project agent-core --group build python packaging/package.py   # 可加 --skip-core / --skip-flutter
 uv run --no-project --with pillow python packaging/make_icons.py        # 从 assets/branding/ 的主图重新生成各平台图标
 ```

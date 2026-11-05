@@ -88,8 +88,10 @@ Claude 和 DeepSeek 二选一，也可以两个都配，按账号或会话选用
 | 平台 | 文件 | 运行 |
 | --- | --- | --- |
 | Windows 10+（x64） | `qq-llm-bot-<版本>-windows-x64.zip` | 解压后运行 `qq_llm_bot.exe`。首次运行可能出现 SmartScreen 提示，点「更多信息 → 仍要运行」 |
-| macOS（Apple 芯片 / Intel） | `qq-llm-bot-<版本>-macos-arm64.zip` / `-macos-x64.zip` | 解压后把 `qq-llm-bot.app` 拖进「应用程序」。应用没有公证，首次打开会被拦截：在「系统设置 → 隐私与安全性」里点「仍要打开」 |
+| macOS（Apple 芯片） | `qq-llm-bot-<版本>-macos-arm64.zip` | 解压后把 `qq-llm-bot.app` 拖进「应用程序」。应用没有公证，首次打开会被拦截：在「系统设置 → 隐私与安全性」里点「仍要打开」 |
 | Linux（x64） | `qq-llm-bot-<版本>-linux-x86_64.AppImage` | `chmod +x` 后直接运行。需要 FUSE（`libfuse2`）；托盘需要 AppIndicator（GNOME 要装扩展） |
+
+Intel 芯片的 Mac 没有现成的包，可以按[打包便携版](#打包便携版)在自己的 Mac 上打包。
 
 数据默认放在系统的用户数据目录（见[数据目录](#数据目录)），和程序文件分开：升级时删掉旧的程序文件夹、解压新版本即可，数据会保留并自动迁移。想放到别的位置，在设置页的「数据目录」里更换。
 
@@ -140,7 +142,7 @@ uv run --project agent-core --group build python packaging/package.py
 
 脚本会用 Nuitka 把核心服务打成自带 Python 运行时的 `agent-core/` 目录，执行 `flutter build <平台> --release`，再把两者放在一起，输出到 `dist/`。需要本机有 C 编译器（Windows 用 Visual Studio，macOS 用 Xcode 命令行工具，Linux 用 gcc 和 `patchelf`）；Linux 还需要 [appimagetool](https://github.com/AppImage/appimagetool)。
 
-推送 `v*` 标签时，GitHub Actions（`.github/workflows/release.yml`）会在 Windows、macOS（Apple 芯片和 Intel）、Linux 上并行打包，并把产物放进一个草稿 Release。
+推送 `v*` 标签时，GitHub Actions（`.github/workflows/release.yml`）会在 Windows、macOS（Apple 芯片）、Linux 上并行打包，并把产物放进一个草稿 Release。
 
 ### 更换应用图标
 

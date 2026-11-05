@@ -1,7 +1,7 @@
 """用 Nuitka 把核心服务打成独立目录 agent-core/，自带 Python 运行时，用户不用装 Python。
 
-第三方包按字节码打进去，编译成 C 的只有我们自己的代码和个别例外（见 third_party_packages()）。
-本机 16 核首次构建约 5 分钟，有缓存时约 3 分钟；缓存在 Nuitka 的缓存目录里。
+Python 代码（我们自己的和第三方的）都按字节码打进去，编译成 C 的只有入口和个别例外（见 STILL_COMPILED）。
+本机 16 核首次构建约 5 分钟，有缓存时约 2.5 分钟；缓存在 Nuitka 的缓存目录里。
 
 用法（在仓库根目录）：
     uv run --project agent-core --group build python packaging/build_core.py [--out build/core]
@@ -46,10 +46,13 @@ if sys.platform == "win32":
 elif sys.platform.startswith("linux"):
     INCLUDE_PACKAGES += ["secretstorage", "jeepney"]  # keyring 的 Secret Service 后端
 
-# 不算第三方的发行包：我们自己的代码编译成 C（插件在打包后由 registry.BUILTIN_PLUGINS 兜底，不需要元数据），
+# 我们自己的代码也按字节码打进去：编译成 C 运行起来快不了多少（大多在等网络），仓库公开也谈不上保护源码，
+# 却让构建慢四分之一（本机有缓存时 3.3 分钟 → 2.5 分钟）。
+OWN_PACKAGES = ["agent_core"]
+# 不算第三方的发行包：我们自己的代码不需要带元数据（插件在打包后由 registry.BUILTIN_PLUGINS 兜底），
 # 打包工具不进包。
 OWN_DISTRIBUTIONS = {"agent-core", "nuitka"}
-# 仍然编译成 C 的第三方包。Nuitka 的 multiprocessing 插件会给 anyio.to_process 加一段导入后执行的代码，
+# 仍然编译成 C 的包。Nuitka 的 multiprocessing 插件会给 anyio.to_process 加一段导入后执行的代码，
 # 这段代码跟着按字节码处理的话，第二次构建从缓存载入它时 Nuitka 4.3.1 会崩溃
 # （'UncompiledPythonModule' object has no attribute 'getCompilationMode'）。
 STILL_COMPILED = {"anyio"}
@@ -59,7 +62,7 @@ def third_party_packages() -> dict[str, list[str]]:
     """当前环境里装的第三方顶层包 → 它所属的发行包。除了 STILL_COMPILED，都按字节码打进去，不编译成 C。
 
     全部编译时约 3500 个模块要转成 C（约 2500 个来自 anthropic SDK：import anthropic 会加载全部类型定义），
-    CI 上一次要 20~80 分钟；按字节码打包（标准库 Nuitka 默认就是这样）以后只剩 100 多个。
+    CI 上一次要 20~80 分钟；按字节码打包（标准库 Nuitka 默认就是这样）以后只剩 anyio 等几十个。
     这些包运行起来大多在等网络，编译成 C 也快不了多少。
     """
     result: dict[str, list[str]] = {}
@@ -108,7 +111,7 @@ def main() -> int:
         f"--include-data-dir={CORE / 'agent_core/infra/db/migrations'}=agent_core/infra/db/migrations",
         *(f"--include-package={p}" for p in INCLUDE_PACKAGES),
         *(f"--include-module={m}" for m in INCLUDE_MODULES),
-        *(f"--noinclude-custom-mode={p}:bytecode" for p in packages if p not in STILL_COMPILED),
+        *(f"--noinclude-custom-mode={p}:bytecode" for p in [*OWN_PACKAGES, *packages] if p not in STILL_COMPILED),
         f"--user-package-configuration-file={metadata_config}",
         # 测试辅助代码运行时用不到；alembic 整包引入时会把它们带进来。
         "--nofollow-import-to=*.tests",

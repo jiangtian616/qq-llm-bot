@@ -32,11 +32,10 @@ jobs:
         include:
           - name: windows-x64
             os: windows-latest
+          # 不出 Intel 版 macOS 的包：Intel 的 runner 构建核心服务比 Apple 芯片慢一倍多（17 分钟对 8 分钟），
+          # 整次构建都在等它。需要的话在 Intel 的 Mac 上用 packaging/package.py 自己打包。
           - name: macos-arm64
             os: macos-15
-          # Intel 版 macOS 的 runner 标签变动较多，首次运行若找不到 runner，请按 GitHub 当前的标签调整。
-          - name: macos-x64
-            os: macos-15-intel
           - name: linux-x86_64
             os: ubuntu-22.04
     runs-on: ${{ matrix.os }}
