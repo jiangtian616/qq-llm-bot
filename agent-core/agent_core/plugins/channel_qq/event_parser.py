@@ -9,10 +9,13 @@ msg_elements 里 msg_idx 等于 ref_msg_idx 的那一项就是被引用消息的
 机器人发消息时接口返回的 ref_idx 和别人引用它时看到的不是同一个值，只有这后 80 字节对得上，所以拿它来认出被引用的消息是谁发的。
 这不是官方文档写明的格式，解析不了就当认不出来。
 
-@ 别人：全量模式（GROUP_MESSAGE_CREATE）的 content 里，@ 某人写成 <@member_openid>，@全体成员写成 <@all>，
+@：全量模式（GROUP_MESSAGE_CREATE）的 content 里，@ 某人写成 <@member_openid>，@全体成员写成 <@all>，
 被 @ 的人（昵称、is_you 是不是机器人自己）在 mentions 里。@ 机器人的消息全量模式下只推这一种事件，
-所以 mentions 里有 is_you 就算 @ 了机器人；开头的这个 @ 去掉，和 GROUP_AT_MESSAGE_CREATE 一致，句中的换成昵称。
-桌面端会话页的文字另存一份（display_content）：开头 @ 机器人的也留着，@ 写成「@昵称(openid 末 6 位)」，和发言人标识一致。
+所以 mentions 里有 is_you 就算 @ 了机器人。仅 @ 模式（GROUP_AT_MESSAGE_CREATE）没有 mentions，
+平台把 @ 机器人整个删掉（句首、句中、句末都删，只留一个空格），位置找不回来。
+交给模型的文字里，@ 机器人的写成「@你」（SELF_MENTION）：全量模式在原位换，仅 @ 模式补在开头；@ 别人的写成「@昵称」。
+不去掉 @ 机器人：模型要靠它知道这条是叫它的，同时 @ 了几个人时去掉开头的那个也会让模型以为是在跟别人说话。
+桌面端会话页的文字另存一份（display_content）：@ 写成「@昵称(openid 末 6 位)」，和发言人标识一致。
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import json
 import re
 from typing import Any
 
-from agent_core.core.models import Attachment, InboundMessage, Quote, RawEvent, Scene, person_label
+from agent_core.core.models import SELF_MENTION, Attachment, InboundMessage, Quote, RawEvent, Scene, person_label
 from agent_core.plugins.channel_qq.constants import EventType
 
 _REF_PREFIX = "REFIDX_"
@@ -47,8 +50,8 @@ def sender_key(ref_idx: str | None) -> str | None:
 def clean_content(
     content: str | None, mentions: list[Any] | None = None, *, keep_self: bool = False, with_openid: bool = False
 ) -> str:
-    """去掉前导空格（群里 @ 机器人的消息，@ 部分已被平台去掉，只剩空格），表情换成它的文字或「[表情]」，
-    <@openid> 换成「@昵称」（昵称从 mentions 里找）。开头 @ 机器人自己的去掉，keep_self 时也换成昵称（收件箱展示用）。
+    """去掉首尾空格（仅 @ 模式下平台删掉 @ 机器人后留下的），表情换成它的文字或「[表情]」，
+    <@openid> 换成「@昵称」（昵称从 mentions 里找）。@ 机器人自己的写成「@你」，keep_self 时也换成昵称（展示用）。
     with_openid 时 @ 写成「@昵称(openid 末 6 位)」（会话页展示用，见 core.models.person_label）。
     """
     text = _FACE.sub(_face_text, content or "")
@@ -65,8 +68,8 @@ def clean_content(
         if openid == "all":
             return "@全体成员" + space
         m = people.get(openid) or {}
-        if m.get("is_you") and not keep_self and not text[: match.start()].strip():
-            return ""
+        if m.get("is_you") and not keep_self:
+            return SELF_MENTION + space
         if with_openid:
             return f"@{person_label(m.get('username'), openid)}{space}"
         return f"@{m.get('username') or '群成员'}{space}"
@@ -75,7 +78,7 @@ def clean_content(
 
 
 def display_content(payload: dict[str, Any]) -> str:
-    """收件箱里展示的消息文字：和存进历史的一样清理，但 @ 机器人的也留着（会话页的另见 InboundMessage.display_content）。"""
+    """收件箱里展示的消息文字：和存进历史的一样清理，但 @ 机器人的写成昵称（会话页的另见 InboundMessage.display_content）。"""
     return clean_content(payload.get("content"), payload.get("mentions"), keep_self=True)
 
 
@@ -139,6 +142,10 @@ class EventParser:
         ext = _scene_ext(d)
         content = clean_content(d.get("content"), d.get("mentions"))
         shown = clean_content(d.get("content"), d.get("mentions"), keep_self=True, with_openid=True)
+        if event.event_type == EventType.GROUP_AT_MESSAGE_CREATE:
+            # 平台删掉了 @ 机器人，位置找不回来，补在开头；这种事件里也没有机器人的昵称。
+            content = f"{SELF_MENTION} {content}".rstrip()
+            shown = f"@机器人 {shown}".rstrip()
         return InboundMessage(
             account_id=event.account_id,
             scene=scene,

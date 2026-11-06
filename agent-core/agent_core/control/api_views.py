@@ -302,7 +302,7 @@ def build_views_router() -> APIRouter:
         with_request = await s.db.traces.steps_with_request(turn_id)
         return {
             **_turn_view(t, c, m),
-            "question": m.content,
+            "question": m.display_content or m.content,
             "sender": speaker_label(c.scene, contact.openid, contact.display_name) if contact else None,
             "steps": [_step_view(x, x.id in with_request) for x in await s.db.traces.steps(turn_id)],
             "outbox": [
@@ -457,7 +457,7 @@ def _turn_view(t: Any, c: Any, m: Any) -> dict[str, Any]:
         "last_error": t.last_error,
         "started_at": t.started_at,
         "finished_at": t.finished_at,
-        "preview": _preview(m.content),
+        "preview": _preview(m.display_content or m.content),
     }
 
 

@@ -46,7 +46,7 @@ from agent_core.agent.tools import PageImagesTool, ReplyTool
 from agent_core.agent.web import fetch_page
 from agent_core.core.bus import BusEvent, EventBus
 from agent_core.core.clock import now_ms, start_of_local_day_ms
-from agent_core.core.models import GenerateResult, InboundMessage, NeutralMessage, Scene
+from agent_core.core.models import SELF_MENTION, GenerateResult, InboundMessage, NeutralMessage, Scene
 from agent_core.core.network import Proxy
 from agent_core.core.ports import ChannelAdapter, LLMProvider, ServerTool, Tool, Toolset
 from agent_core.core.trace import Stopwatch, Trace
@@ -145,8 +145,10 @@ class AgentEngine:
 
         command = None
         prefix = await setting("command.prefix")
-        if (triggered or judging) and prefix and msg.content.startswith(prefix):
-            name = msg.content[len(prefix) :].strip()
+        # 群里 @ 机器人的在文字里是「@你」（句首或句末），认指令时去掉。
+        text = msg.content.removeprefix(SELF_MENTION).removesuffix(SELF_MENTION).strip()
+        if (triggered or judging) and prefix and text.startswith(prefix):
+            name = text[len(prefix) :].strip()
             if name in _COMMANDS:
                 command = name
                 triggered, judging = True, False

@@ -74,6 +74,7 @@ class InboundMessage:
     sender_openid: str
     platform_msg_id: str
     content: str
+    """交给模型的文字：群里 @ 机器人的写成 SELF_MENTION（见 channel_qq.event_parser）。"""
     is_mention: bool
     platform_ts: str | None = None
     quote_msg_id: str | None = None
@@ -85,7 +86,11 @@ class InboundMessage:
     sender_name: str | None = None
     """平台给的发送者昵称（有的话）；只用于桌面端展示，不进模型上下文。"""
     display_content: str | None = None
-    """桌面端展示的消息文字：@ 写成「@昵称(openid 末 6 位)」，开头 @ 机器人的也留着；和 content 一样时为空。"""
+    """桌面端展示的消息文字：@ 写成「@昵称(openid 末 6 位)」，@ 机器人的也写成昵称；和 content 一样时为空。"""
+
+
+# 群消息里 @ 机器人，交给模型时写成这个（和引用里的「你之前的回复」一样，站在机器人的角度）。
+SELF_MENTION = "@你"
 
 
 def person_label(name: str | None, openid: str) -> str:
